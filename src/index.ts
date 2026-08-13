@@ -190,16 +190,19 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				webServer.register({
 					kind: "exact",
 					path: "/plugins/lark-link/status",
-					handler: (_req, res) => {
+					handler: async (_req, res) => {
 						const r = res as {
 							writeHead(s: number, h: Record<string, string>): unknown;
 							end(body?: unknown): unknown;
 						};
+						const configured = Boolean(
+							await resolveCredentials(credStore, getCfg().credentialRef),
+						);
 						r.writeHead(200, {
 							"Content-Type": "application/json; charset=utf-8",
 							"Cache-Control": "no-store",
 						});
-						r.end(JSON.stringify(status.get()));
+						r.end(JSON.stringify({ ...status.get(), configured }));
 					},
 				}),
 			"lark-link: webui status route",

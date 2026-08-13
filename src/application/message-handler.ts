@@ -67,6 +67,16 @@ export function createMessageHandler(deps: MessageHandlerDeps): MessageHandler {
         logger.error("message dropped: conversations not assembled (late wiring?)");
         return "dropped";
       }
+      // Establish/refresh the delivery route (sessionKey → chatId) so the
+      // event forwarder can route the agent's reply back to this Feishu chat.
+      // Without this the forwarder drops every reply (routeFor → undefined).
+      const sessionKey = cm.keyFor(msg);
+      deps.ctx.router?.upsert({
+        sessionKey,
+        chatId: msg.chatId,
+        chatType: msg.chatType,
+        updatedAt: Date.now(),
+      });
       try {
         await cm.handleMessage(msg);
       } catch (err) {
