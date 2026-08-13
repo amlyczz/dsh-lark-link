@@ -58,6 +58,7 @@ import {
 	type LarkDomain,
 } from "./host/lark-client.ts";
 import * as qrcode from "qrcode-terminal";
+import QRCode from "qrcode";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { mkdirSync, readFileSync, statSync, rmSync } from "node:fs";
@@ -70,6 +71,7 @@ export const inject = [
 	"agents",
 	"systemPrompt",
 	"credentials",
+	"webServer",
 ];
 
 export interface LarkLinkConfig {
@@ -139,6 +141,50 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	let startBlocker: string | undefined;
 	const maskId = (id: string): string =>
 		id.length <= 8 ? "****" : `${id.slice(0, 6)}…${id.slice(-4)}`;
+
+	// ---- webui QR surface ---------------------------------------------------
+	// /lark setup renders its QR into a PNG served at /plugins/lark-link/qr so
+	// the Web GUI (sidebar panel) can show a scannable image directly — the GUI
+	// markdown image sanitizer only allows http(s), and a plugin can't push to
+	// the client, so a host-served local image is the reliable channel.
+	let activeQr: { png: Buffer; expireAt: number } | undefined;
+	const webServer = (
+		ctx as unknown as {
+			webServer?: {
+				register(r: {
+					kind: "exact" | "prefix";
+					path: string;
+					handler: (req: unknown, res: unknown) => void;
+				}): () => void;
+			};
+		}
+	).webServer;
+	if (webServer) {
+		ctx.effect(
+			() =>
+				webServer.register({
+					kind: "exact",
+					path: "/plugins/lark-link/qr",
+					handler: (_req, res) => {
+						const r = res as {
+							writeHead(status: number, headers: Record<string, string>): unknown;
+							end(body?: unknown): unknown;
+						};
+						if (activeQr && Date.now() < activeQr.expireAt) {
+							r.writeHead(200, {
+								"Content-Type": "image/png",
+								"Cache-Control": "no-store",
+							});
+							r.end(activeQr.png);
+						} else {
+							r.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+							r.end("no active lark-link setup qr (run /lark setup)");
+						}
+					},
+				}),
+			"lark-link: webui qr route",
+		);
+	}
 
 	// ---- sender (outbox target) ----------------------------------------------
 	const sender: FeishuSender = {
@@ -689,7 +735,15 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					const res = await setup.run({
 						onQRCodeReady(info) {
 							qrInfo = info;
-							// Mirror to the host terminal for TTY users.
+							// Render a PNG for the Web GUI panel (host-served route) and mirror
+							// an ASCII QR to the terminal for TTY users.
+							void QRCode.toBuffer(info.url, { type: "png", margin: 1, width: 256 })
+								.then((png) => {
+									activeQr = { png, expireAt: Date.now() + info.expireIn * 1000 };
+								})
+								.catch((e) =>
+									logger.warn(`qr png failed: ${e instanceof Error ? e.message : String(e)}`),
+								);
 							try {
 								qrcode.generate(info.url, { small: true }, (qr) =>
 									console.log(`\n${qr}`),
@@ -700,11 +754,15 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						},
 						onStatusChange: (s) => logger.info(`setup: ${s}`),
 					});
-					logger.info(`setup complete: appId=${res.appId} domain=${res.domain}`);
+					logger.info(
+						`setup complete: appId=${res.appId} domain=${res.domain}`,
+					);
+					activeQr = undefined;
 				} catch (err) {
 					logger.warn(
 						`setup background failed: ${err instanceof Error ? err.message : String(err)}`,
 					);
+					activeQr = undefined;
 				}
 			})();
 			// Bounded wait for the QR to appear (registerApp reaches Feishu first).
@@ -715,15 +773,15 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			if (!qrInfo) {
 				return "扫码流程未在 30s 内就绪。可改用手动通道：设 DSH_LARK_APP_ID + DSH_LARK_APP_SECRET 后再 /lark setup。";
 			}
-			console.log(`飞书授权二维码链接: ${qrInfo.url}（${qrInfo.expireIn} 秒后过期）`);
+			console.log(
+				`飞书授权二维码链接: ${qrInfo.url}（${qrInfo.expireIn} 秒后过期）`,
+			);
 			return [
-				"📱 飞书授权二维码已生成，请在手机飞书扫码确认。",
+				"📱 飞书授权二维码已生成 —— 见左侧 🪶 Lark 面板（或终端），手机飞书扫码确认。",
 				"",
-				`链接（手机浏览器可直接打开）：${qrInfo.url}`,
-				`二维码 ${qrInfo.expireIn} 秒后过期。`,
-				"",
-				"扫码确认后凭据会在后台写入 ctx.credentials，稍后运行 /lark start 启动桥接。",
-				"（终端也打印了二维码；看不到就用 DSH_LARK_APP_ID/SECRET 手动通道。）",
+				`二维码 ${qrInfo.expireIn} 秒后过期。扫码后凭据在后台写入，运行 /lark start 启动。`,
+				`备用链接（手机浏览器打开）：${qrInfo.url}`,
+				"看不到二维码？终端也打印了；或用 DSH_LARK_APP_ID/SECRET 手动通道。",
 			].join("\n");
 		},
 	);

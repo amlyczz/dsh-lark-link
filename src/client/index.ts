@@ -1,26 +1,26 @@
 // dsh-lark-link client half (browser). Reuses the DSH Web GUI entirely
 // (spec §7): bridge sessions are native DSH sessions already rendered by the
 // GUI. This client adds one bridge-specific surface — a sidebar footer action
-// button that opens a self-contained quick-reference popover.
+// button that opens a self-contained popover showing the setup QR + commands.
+//
+// Why a host-served QR image (not a base64 data URL or an in-result markdown
+// image): the GUI markdown image sanitizer only allows http(s) (data: URLs
+// are dropped), and a plugin can't push to the client over ctx.remote. So the
+// host serves the active setup QR as a PNG at /plugins/lark-link/qr and this
+// panel loads it with a plain <img>. We control this render site, so the QR
+// reliably shows; polling with a cache-buster picks it up once /lark setup runs.
 //
 // Slot registration: `sidebar.footer.action` is a `list` slot (declared by
 // ui-sidebar). The `name` passed to `ctx.slots.register` MUST be the parent
 // slot's name; the entry is identified by `id`. The component owns its own
-// open/close state — no second registration, no cross-entry event coupling
-// (those were the click-does-nothing failure modes). The popover is
+// open/close state (no cross-entry event coupling). The popover is
 // position:fixed so it escapes any sidebar overflow:hidden ancestor.
-//
-// ctx.remote is a generated facade over fixed host contributions (commands /
-// goals / inventory / …) — a plugin can't register an arbitrary
-// `lark-link/status` method — so the popover shows static command help
-// instead of attempting an RPC that would always reject. Live status lives
-// in the composer via `/lark status`.
 
 import type { Context } from "@deepseek-ai/cordis";
 
 // React is a shared runtime dep of dsh-client-web; the host ModuleLoader
-// resolves it via the closure-factory `require` param (createRequire over the
-// config-tree baseUrl). Never bundled — see tsdown.config.ts client externals.
+// resolves it via the closure-factory `require` param. Never bundled — see
+// tsdown.config.ts client externals.
 type ReactApi = {
 	createElement: (
 		type: unknown,
@@ -28,9 +28,10 @@ type ReactApi = {
 		...children: unknown[]
 	) => unknown;
 	useState: <S>(initial: S) => [S, (next: S | ((prev: S) => S)) => void];
+	useEffect: (setup: () => (() => void) | void, deps?: unknown[]) => void;
 };
 const R = require("react") as ReactApi;
-const { createElement: h, useState } = R;
+const { createElement: h, useState, useEffect } = R;
 
 export const name = "dsh-lark-link-client";
 export const inject = ["slots"];
@@ -45,11 +46,12 @@ export interface ClientContext extends Context {
 	};
 }
 
+const win = globalThis as unknown as {
+	location?: { origin?: string };
+};
+
 const COMMANDS: ReadonlyArray<{ cmd: string; desc: string }> = [
-	{
-		cmd: "/lark setup",
-		desc: "扫码建应用（或 DSH_LARK_APP_ID/SECRET 环境变量手动）",
-	},
+	{ cmd: "/lark setup", desc: "扫码建应用（面板显示二维码）" },
 	{ cmd: "/lark start", desc: "启动桥接" },
 	{ cmd: "/lark stop", desc: "停止（保留凭据/配置）" },
 	{ cmd: "/lark restart", desc: "重启" },
@@ -59,10 +61,23 @@ const COMMANDS: ReadonlyArray<{ cmd: string; desc: string }> = [
 
 export function apply(ctx: ClientContext): void {
 	// Sidebar footer action: a single self-contained component — button +
-	// position:fixed popover. All state is local, so the click always works
-	// regardless of whether any other surface mounts.
+	// position:fixed popover. All state is local, so the click always works.
 	const SidebarAction = (): unknown => {
 		const [open, setOpen] = useState<boolean>(false);
+		const [qrTs, setQrTs] = useState<number>(0);
+		const [qrLoaded, setQrLoaded] = useState<boolean>(false);
+
+		// While open, refresh the QR image every few seconds so it appears as
+		// soon as /lark setup generates one (and re-fetches a fresh one on retry).
+		useEffect(() => {
+			if (!open) return;
+			setQrTs(Date.now());
+			const id = setInterval(() => setQrTs(Date.now()), 4000);
+			return () => clearInterval(id);
+		}, [open]);
+
+		const origin = win.location?.origin ?? "";
+		const qrSrc = qrTs ? `${origin}/plugins/lark-link/qr?t=${qrTs}` : "";
 
 		const button = h(
 			"button",
@@ -90,18 +105,34 @@ export function apply(ctx: ClientContext): void {
 
 		if (!open) return button;
 
-		// position:fixed escapes sidebar overflow clipping; floats over the app.
+		// Single img drives load detection; hidden (but still fetched) until it
+		// loads, so onLoad/onError toggle the visible QR vs. the setup hint.
+		const qrImg = h("img", {
+			src: qrSrc,
+			alt: "Lark Link setup QR",
+			onError: () => setQrLoaded(false),
+			onLoad: () => setQrLoaded(true),
+			style: {
+				width: "220px",
+				height: "220px",
+				display: qrLoaded ? "block" : "none",
+				margin: "0 auto",
+			},
+		});
+		const qrHint = qrLoaded
+			? null
+			: h(
+					"div",
+					{ style: { textAlign: "center", opacity: 0.7, padding: "10px 0" } },
+					"（暂无二维码）在输入框运行 ",
+					h("code", { style: { color: "#7fd1ff" } }, "/lark setup"),
+					" 生成。",
+				);
+
 		const rows = COMMANDS.map((c) =>
 			h(
 				"div",
-				{
-					style: {
-						display: "flex",
-						gap: "10px",
-						padding: "3px 0",
-						borderBottom: "1px solid rgba(255,255,255,.06)",
-					},
-				},
+				{ style: { display: "flex", gap: "10px", padding: "3px 0", borderBottom: "1px solid rgba(255,255,255,.06)" } },
 				h("code", { style: { color: "#7fd1ff", flex: "0 0 150px" } }, c.cmd),
 				h("span", { style: { opacity: 0.8 } }, c.desc),
 			),
@@ -117,6 +148,8 @@ export function apply(ctx: ClientContext): void {
 					zIndex: 2147483000,
 					minWidth: "320px",
 					maxWidth: "400px",
+					maxHeight: "80vh",
+					overflow: "auto",
 					padding: "14px 16px",
 					background: "rgba(24,26,32,.97)",
 					color: "#e6e8eb",
@@ -130,43 +163,31 @@ export function apply(ctx: ClientContext): void {
 			},
 			h(
 				"div",
-				{
-					style: {
-						display: "flex",
-						justifyContent: "space-between",
-						alignItems: "center",
-						marginBottom: "10px",
-					},
-				},
+				{ style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" } },
 				h("strong", { style: { fontSize: "13px" } }, "🪶 Lark Link"),
 				h(
 					"button",
 					{
 						type: "button",
 						onClick: () => setOpen(false),
-						style: {
-							background: "transparent",
-							border: "none",
-							color: "#9aa0a6",
-							cursor: "pointer",
-							fontSize: "16px",
-							lineHeight: 1,
-						},
+						style: { background: "transparent", border: "none", color: "#9aa0a6", cursor: "pointer", fontSize: "16px", lineHeight: 1 },
 						title: "关闭",
 					},
 					"×",
 				),
 			),
+			qrImg,
+			qrHint,
 			h(
 				"div",
-				{ style: { marginBottom: "8px", opacity: 0.8 } },
-				"飞书/Lark ↔ DeepSeek Harness 桥接。在输入框输入命令：",
+				{ style: { marginTop: "12px", marginBottom: "6px", opacity: 0.8 } },
+				"命令（在输入框输入）：",
 			),
 			h("div", null, ...rows),
 			h(
 				"div",
 				{ style: { marginTop: "10px", opacity: 0.6, fontSize: "11px" } },
-				"实时状态用 /lark status；发消息到飞书机器人即可端到端连通。",
+				"扫码确认后凭据自动写入，运行 /lark start 即可端到端连通。",
 			),
 		);
 
@@ -175,12 +196,7 @@ export function apply(ctx: ClientContext): void {
 
 	ctx.slots.inject("sidebar.footer.action", () =>
 		ctx.slots.register(
-			{
-				name: "sidebar.footer.action",
-				id: "lark-link-entry",
-				order: 100,
-				label: "Lark Link",
-			},
+			{ name: "sidebar.footer.action", id: "lark-link-entry", order: 100, label: "Lark Link" },
 			SidebarAction,
 		),
 	);
