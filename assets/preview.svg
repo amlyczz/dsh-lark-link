@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1026"/>
+      <stop offset="55%" stop-color="#131a3a"/>
+      <stop offset="100%" stop-color="#1e1a4a"/>
+    </linearGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#37d67a"/>
+      <stop offset="50%" stop-color="#4dd7fe"/>
+      <stop offset="100%" stop-color="#3370ff"/>
+    </linearGradient>
+    <linearGradient id="sub" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7ee0ff"/>
+      <stop offset="100%" stop-color="#8fb3ff"/>
+    </linearGradient>
+    <linearGradient id="chip" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff14"/>
+      <stop offset="100%" stop-color="#ffffff08"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <!-- 像素网格纹理 -->
+  <g stroke="#ffffff08" stroke-width="1">
+    <g stroke="#ffffff08">
+      <line x1="0" y1="0" x2="0" y2="630"/><line x1="50" y1="0" x2="50" y2="630"/>
+      <line x1="100" y1="0" x2="100" y2="630"/><line x1="150" y1="0" x2="150" y2="630"/>
+      <line x1="200" y1="0" x2="200" y2="630"/><line x1="250" y1="0" x2="250" y2="630"/>
+      <line x1="300" y1="0" x2="300" y2="630"/><line x1="350" y1="0" x2="350" y2="630"/>
+      <line x1="400" y1="0" x2="400" y2="630"/><line x1="450" y1="0" x2="450" y2="630"/>
+      <line x1="500" y1="0" x2="500" y2="630"/><line x1="550" y1="0" x2="550" y2="630"/>
+      <line x1="600" y1="0" x2="600" y2="630"/><line x1="650" y1="0" x2="650" y2="630"/>
+      <line x1="700" y1="0" x2="700" y2="630"/><line x1="750" y1="0" x2="750" y2="630"/>
+      <line x1="800" y1="0" x2="800" y2="630"/><line x1="850" y1="0" x2="850" y2="630"/>
+      <line x1="900" y1="0" x2="900" y2="630"/><line x1="950" y1="0" x2="950" y2="630"/>
+      <line x1="1000" y1="0" x2="1000" y2="630"/><line x1="1050" y1="0" x2="1050" y2="630"/>
+      <line x1="1100" y1="0" x2="1100" y2="630"/><line x1="1150" y1="0" x2="1150" y2="630"/>
+    </g>
+    <g stroke="#ffffff08">
+      <line x1="0" y1="0" x2="1200" y2="0"/><line x1="0" y1="50" x2="1200" y2="50"/>
+      <line x1="0" y1="100" x2="1200" y2="100"/><line x1="0" y1="150" x2="1200" y2="150"/>
+      <line x1="0" y1="200" x2="1200" y2="200"/><line x1="0" y1="250" x2="1200" y2="250"/>
+      <line x1="0" y1="300" x2="1200" y2="300"/><line x1="0" y1="350" x2="1200" y2="350"/>
+      <line x1="0" y1="400" x2="1200" y2="400"/><line x1="0" y1="450" x2="1200" y2="450"/>
+      <line x1="0" y1="500" x2="1200" y2="500"/><line x1="0" y1="550" x2="1200" y2="550"/>
+      <line x1="0" y1="600" x2="1200" y2="600"/>
+    </g>
+  </g>
+
+  <!-- 顶部角标 -->
+  <rect x="1015" y="36" width="150" height="34" rx="17" fill="#ffffff14"/>
+  <text x="1090" y="59" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#8fb3ff" text-anchor="middle">dsh-lark-link</text>
+
+  <!-- 主标题 -->
+  <text x="60" y="118" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="60" font-weight="700" fill="url(#title)">DSH × Feishu Link</text>
+  <!-- 副标题 -->
+  <text x="62" y="166" font-family="system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif" font-size="26" fill="url(#sub)">DeepSeek Harness 飞书/Lark 双向桥接插件 · 一条命令安装 · 消息零丢失 · 复用 Web GUI</text>
+
+  <!-- 中部：双向桥接示意（DSH 终端 ⇄ 飞书） -->
+  <!-- 左侧 DSH 面板 -->
+  <rect x="120" y="230" width="300" height="220" rx="18" fill="url(#chip)" stroke="#ffffff22"/>
+  <rect x="140" y="252" width="60" height="14" rx="4" fill="#37d67a"/>
+  <rect x="140" y="280" width="170" height="10" rx="3" fill="#ffffff30"/>
+  <rect x="140" y="300" width="220" height="10" rx="3" fill="#ffffff22"/>
+  <rect x="140" y="320" width="190" height="10" rx="3" fill="#ffffff22"/>
+  <rect x="140" y="340" width="120" height="10" rx="3" fill="#4dd7fe"/>
+  <text x="140" y="380" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="16" fill="#4dd7fe">dsh --profile web</text>
+  <text x="140" y="404" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="16" fill="#7ee0ff">/lark setup · /lark start</text>
+  <text x="140" y="428" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#8fb3ff">per-conversation DSH agent</text>
+
+  <!-- 中间连接：双箭头 + 链路徽章 -->
+  <line x1="424" y1="330" x2="560" y2="330" stroke="#4dd7fe" stroke-width="3" marker-end="url(#arrR)"/>
+  <line x1="560" y1="360" x2="424" y2="360" stroke="#37d67a" stroke-width="3" marker-end="url(#arrL)"/>
+  <defs>
+    <marker id="arrR" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#4dd7fe"/>
+    </marker>
+    <marker id="arrL" markerWidth="10" markerHeight="10" refX="2" refY="3" orient="auto">
+      <path d="M8,0 L0,3 L8,6 Z" fill="#37d67a"/>
+    </marker>
+  </defs>
+  <text x="492" y="310" font-family="system-ui,sans-serif" font-size="14" fill="#7ee0ff" text-anchor="middle">Outbox</text>
+  <text x="492" y="392" font-family="system-ui,sans-serif" font-size="14" fill="#37d67a" text-anchor="middle">WS 长连接</text>
+
+  <!-- 右侧飞书面板 -->
+  <rect x="600" y="230" width="480" height="220" rx="18" fill="url(#chip)" stroke="#ffffff22"/>
+  <rect x="620" y="252" width="14" height="14" rx="4" fill="#3370ff"/>
+  <text x="642" y="264" font-family="system-ui,'PingFang SC',sans-serif" font-size="16" fill="#ffffffd9">飞书 / Lark</text>
+  <!-- 会话气泡 -->
+  <rect x="620" y="282" width="300" height="34" rx="8" fill="#ffffff18"/>
+  <text x="634" y="304" font-family="system-ui,'PingFang SC',sans-serif" font-size="15" fill="#ffffffcc">帮我看看当前目录</text>
+  <rect x="760" y="326" width="320" height="54" rx="8" fill="#3370ff44"/>
+  <text x="774" y="348" font-family="system-ui,'PingFang SC',sans-serif" font-size="15" fill="#ffffffdd">已收到，正在执行…（流式）</text>
+  <text x="774" y="370" font-family="ui-monospace,monospace" font-size="14" fill="#7ee0ff">✅ DONE</text>
+  <!-- 卡片按钮示意 -->
+  <rect x="620" y="396" width="120" height="34" rx="8" fill="#37d67a33" stroke="#37d67a55"/>
+  <text x="680" y="418" font-family="system-ui,sans-serif" font-size="14" fill="#37d67a" text-anchor="middle">诊断包 /doctor</text>
+  <rect x="752" y="396" width="120" height="34" rx="8" fill="#4dd7fe33" stroke="#4dd7fe55"/>
+  <text x="812" y="418" font-family="system-ui,sans-serif" font-size="14" fill="#4dd7fe" text-anchor="middle">状态 /status</text>
+
+  <!-- 底部特性徽章 -->
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15">
+    <rect x="60" y="492" width="230" height="40" rx="20" fill="#37d67a1f" stroke="#37d67a44"/>
+    <text x="175" y="517" fill="#37d67a" text-anchor="middle">消息零丢失 Outbox</text>
+    <rect x="305" y="492" width="230" height="40" rx="20" fill="#4dd7fe1f" stroke="#4dd7fe44"/>
+    <text x="420" y="517" fill="#4dd7fe" text-anchor="middle">连接自愈 · 配额熔断</text>
+    <rect x="550" y="492" width="230" height="40" rx="20" fill="#3370ff1f" stroke="#3370ff44"/>
+    <text x="665" y="517" fill="#8fb3ff" text-anchor="middle">每会话独立 agent</text>
+    <rect x="795" y="492" width="345" height="40" rx="20" fill="#ffffff10" stroke="#ffffff2e"/>
+    <text x="967" y="517" fill="#ffffffb3" text-anchor="middle">dsh plugin add dsh-lark-link</text>
+  </g>
+
+  <!-- 底部小字 -->
+  <text x="60" y="586" font-family="system-ui,'PingFang SC',sans-serif" font-size="16" fill="#ffffff88">扫码 30 秒上线 · CardKit 流式 · 复用 DSH Web GUI · 无审批全放开</text>
+</svg>

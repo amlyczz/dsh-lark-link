@@ -1,0 +1,14 @@
+# dsh-lark-link bundle patch — inserts the bridge plugin entry into the
+# composition. Users install via `dsh plugin add dsh-lark-link`.
+- insert:
+    - id: lark-link
+      name: 'dsh-lark-link'
+      config:
+        enabled: !!js "process.env.DSH_LARK_LINK_ENABLED ?? 'true'"
+        # Feishu app credentials. Prefer the one-click `/lark setup` flow
+        # (QR registerApp); manual entry writes to ctx.credentials.
+        appId: !!js "process.env.DSH_LARK_LINK_APP_ID ?? ''"
+        # groupPolicy: open | mention | keywords | reply
+        groupPolicy: !!js "process.env.DSH_LARK_LINK_GROUP_POLICY ?? 'mention'"
+        # denyList: exact command prefixes denied outright (no prompt, no card).
+        denyList: []

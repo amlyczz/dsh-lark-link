@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+
+# build output (published via npm "files", not committed)
+dist/
+
+# packaged tarballs
+*.tgz
+
+# logs & env
+*.log
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# bridge runtime state (if ever created here)
+.dsh/
+
+# research/ is private local material (surveys + cloned reference repos) — never published
+research/
