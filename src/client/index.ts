@@ -46,7 +46,10 @@ export interface ClientContext extends Context {
 }
 
 const COMMANDS: ReadonlyArray<{ cmd: string; desc: string }> = [
-	{ cmd: "/lark setup", desc: "扫码建应用（或 DSH_LARK_APP_ID/SECRET 环境变量手动）" },
+	{
+		cmd: "/lark setup",
+		desc: "扫码建应用（或 DSH_LARK_APP_ID/SECRET 环境变量手动）",
+	},
 	{ cmd: "/lark start", desc: "启动桥接" },
 	{ cmd: "/lark stop", desc: "停止（保留凭据/配置）" },
 	{ cmd: "/lark restart", desc: "重启" },
@@ -91,7 +94,14 @@ export function apply(ctx: ClientContext): void {
 		const rows = COMMANDS.map((c) =>
 			h(
 				"div",
-				{ style: { display: "flex", gap: "10px", padding: "3px 0", borderBottom: "1px solid rgba(255,255,255,.06)" } },
+				{
+					style: {
+						display: "flex",
+						gap: "10px",
+						padding: "3px 0",
+						borderBottom: "1px solid rgba(255,255,255,.06)",
+					},
+				},
 				h("code", { style: { color: "#7fd1ff", flex: "0 0 150px" } }, c.cmd),
 				h("span", { style: { opacity: 0.8 } }, c.desc),
 			),
@@ -120,14 +130,28 @@ export function apply(ctx: ClientContext): void {
 			},
 			h(
 				"div",
-				{ style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" } },
+				{
+					style: {
+						display: "flex",
+						justifyContent: "space-between",
+						alignItems: "center",
+						marginBottom: "10px",
+					},
+				},
 				h("strong", { style: { fontSize: "13px" } }, "🪶 Lark Link"),
 				h(
 					"button",
 					{
 						type: "button",
 						onClick: () => setOpen(false),
-						style: { background: "transparent", border: "none", color: "#9aa0a6", cursor: "pointer", fontSize: "16px", lineHeight: 1 },
+						style: {
+							background: "transparent",
+							border: "none",
+							color: "#9aa0a6",
+							cursor: "pointer",
+							fontSize: "16px",
+							lineHeight: 1,
+						},
 						title: "关闭",
 					},
 					"×",
@@ -151,7 +175,12 @@ export function apply(ctx: ClientContext): void {
 
 	ctx.slots.inject("sidebar.footer.action", () =>
 		ctx.slots.register(
-			{ name: "sidebar.footer.action", id: "lark-link-entry", order: 100, label: "Lark Link" },
+			{
+				name: "sidebar.footer.action",
+				id: "lark-link-entry",
+				order: 100,
+				label: "Lark Link",
+			},
 			SidebarAction,
 		),
 	);

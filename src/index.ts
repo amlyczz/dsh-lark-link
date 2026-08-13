@@ -670,31 +670,61 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				});
 				return `凭据已保存（env 手动，appId=${maskId(envAppId)}，domain=${envDomain}）。运行 /lark start 启动。`;
 			}
-			// QR channel — registerApp blocks until the user scans.
+			// QR channel — NON-BLOCKING. registerApp only resolves AFTER the user
+			// scans; awaiting it would hang the GUI ("执行中…") and the QR was only
+			// going to host stdout. So: run registerApp detached in the background
+			// (persists creds on scan), surface the QR URL to the GUI as soon as
+			// onQRCodeReady fires, and return immediately.
 			const lark = await import("@larksuiteoapi/node-sdk");
-			const setup = createAuthSetup({
-				registerApp: lark.registerApp,
-				persist: async (c) => {
-					await persistCredentials(credStore, ref, c);
-				},
-				logger,
-			});
-			const result = await setup.run({
-				onQRCodeReady(info) {
-					try {
-						qrcode.generate(info.url, { small: true }, (qr) =>
-							console.log(`\n${qr}`),
-						);
-					} catch {
-						// qrcode-terminal optional — URL still printed below
-					}
-					console.log(
-						`飞书授权二维码链接: ${info.url}（${info.expireIn} 秒后过期）`,
+			let qrInfo: { url: string; expireIn: number } | undefined;
+			void (async () => {
+				const setup = createAuthSetup({
+					registerApp: lark.registerApp,
+					persist: async (c) => {
+						await persistCredentials(credStore, ref, c);
+					},
+					logger,
+				});
+				try {
+					const res = await setup.run({
+						onQRCodeReady(info) {
+							qrInfo = info;
+							// Mirror to the host terminal for TTY users.
+							try {
+								qrcode.generate(info.url, { small: true }, (qr) =>
+									console.log(`\n${qr}`),
+								);
+							} catch {
+								// qrcode-terminal optional
+							}
+						},
+						onStatusChange: (s) => logger.info(`setup: ${s}`),
+					});
+					logger.info(`setup complete: appId=${res.appId} domain=${res.domain}`);
+				} catch (err) {
+					logger.warn(
+						`setup background failed: ${err instanceof Error ? err.message : String(err)}`,
 					);
-				},
-				onStatusChange: (s) => logger.info(`setup: ${s}`),
-			});
-			return `飞书应用创建成功 ✅  appId=${result.appId}  domain=${result.domain}\n凭据已写入 ctx.credentials（ref=${ref}）。运行 /lark start 启动桥接。`;
+				}
+			})();
+			// Bounded wait for the QR to appear (registerApp reaches Feishu first).
+			const deadline = Date.now() + 30_000;
+			while (!qrInfo && Date.now() < deadline) {
+				await new Promise((r) => setTimeout(r, 200));
+			}
+			if (!qrInfo) {
+				return "扫码流程未在 30s 内就绪。可改用手动通道：设 DSH_LARK_APP_ID + DSH_LARK_APP_SECRET 后再 /lark setup。";
+			}
+			console.log(`飞书授权二维码链接: ${qrInfo.url}（${qrInfo.expireIn} 秒后过期）`);
+			return [
+				"📱 飞书授权二维码已生成，请在手机飞书扫码确认。",
+				"",
+				`链接（手机浏览器可直接打开）：${qrInfo.url}`,
+				`二维码 ${qrInfo.expireIn} 秒后过期。`,
+				"",
+				"扫码确认后凭据会在后台写入 ctx.credentials，稍后运行 /lark start 启动桥接。",
+				"（终端也打印了二维码；看不到就用 DSH_LARK_APP_ID/SECRET 手动通道。）",
+			].join("\n");
 		},
 	);
 
