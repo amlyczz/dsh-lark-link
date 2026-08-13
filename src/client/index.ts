@@ -1,26 +1,23 @@
 // dsh-lark-link client half (browser). Reuses the DSH Web GUI entirely
 // (spec §7): bridge sessions are native DSH sessions already rendered by the
 // GUI. This client adds one bridge-specific surface — a sidebar footer action
-// button that opens a self-contained popover showing the setup QR + commands.
+// button that opens a self-contained popover: live bridge status, the setup
+// QR, and the /lark command quick-reference.
 //
-// Why a host-served QR image (not a base64 data URL or an in-result markdown
-// image): the GUI markdown image sanitizer only allows http(s) (data: URLs
-// are dropped), and a plugin can't push to the client over ctx.remote. So the
-// host serves the active setup QR as a PNG at /plugins/lark-link/qr and this
-// panel loads it with a plain <img>. We control this render site, so the QR
-// reliably shows; polling with a cache-buster picks it up once /lark setup runs.
+// Why host-served images/JSON (not base64 or ctx.remote): the GUI markdown
+// image sanitizer only allows http(s) (data: URLs are dropped), and a plugin
+// can't push to the client over ctx.remote (a fixed generated facade). So the
+// host serves the active setup QR (PNG) and the live bridge status (JSON) at
+// /plugins/lark-link/{qr,status}, and this panel polls them. We control this
+// render site, so both reliably surface.
 //
 // Slot registration: `sidebar.footer.action` is a `list` slot (declared by
 // ui-sidebar). The `name` passed to `ctx.slots.register` MUST be the parent
 // slot's name; the entry is identified by `id`. The component owns its own
-// open/close state (no cross-entry event coupling). The popover is
-// position:fixed so it escapes any sidebar overflow:hidden ancestor.
+// open/close state. The popover is position:fixed (escapes sidebar overflow).
 
 import type { Context } from "@deepseek-ai/cordis";
 
-// React is a shared runtime dep of dsh-client-web; the host ModuleLoader
-// resolves it via the closure-factory `require` param. Never bundled — see
-// tsdown.config.ts client externals.
 type ReactApi = {
 	createElement: (
 		type: unknown,
@@ -48,6 +45,7 @@ export interface ClientContext extends Context {
 
 const win = globalThis as unknown as {
 	location?: { origin?: string };
+	fetch?: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
 };
 
 const COMMANDS: ReadonlyArray<{ cmd: string; desc: string }> = [
@@ -59,21 +57,54 @@ const COMMANDS: ReadonlyArray<{ cmd: string; desc: string }> = [
 	{ cmd: "/lark uninstall-clean", desc: "清凭据 + 清状态目录（不可逆）" },
 ];
 
+interface BridgeStatus {
+	connState?: string;
+	outboxPending?: number;
+	outboxFailed?: number;
+}
+
+function formatStatus(s: BridgeStatus | undefined): string {
+	if (!s) return "";
+	const dot: Record<string, string> = {
+		connected: "🟢 已连接",
+		connecting: "🟡 连接中",
+		reconnecting: "🟡 重连中",
+		degraded: "🟠 降级",
+		quarantined: "🔴 熔断",
+		stopped: "⚪ 已停止",
+		idle: "⚪ 待启动",
+	};
+	const conn = dot[s.connState ?? ""] ?? `⚪ ${s.connState ?? "未知"}`;
+	const extras: string[] = [];
+	if (s.outboxPending && s.outboxPending > 0) extras.push(`待发 ${s.outboxPending}`);
+	if (s.outboxFailed && s.outboxFailed > 0) extras.push(`失败 ${s.outboxFailed}`);
+	return extras.length ? `${conn} · ${extras.join(" · ")}` : conn;
+}
+
 export function apply(ctx: ClientContext): void {
-	// Sidebar footer action: a single self-contained component — button +
-	// position:fixed popover. All state is local, so the click always works.
 	const SidebarAction = (): unknown => {
 		const [open, setOpen] = useState<boolean>(false);
 		const [qrTs, setQrTs] = useState<number>(0);
 		const [qrLoaded, setQrLoaded] = useState<boolean>(false);
+		const [statusLine, setStatusLine] = useState<string>("");
 
-		// While open, refresh the QR image every few seconds so it appears as
-		// soon as /lark setup generates one (and re-fetches a fresh one on retry).
 		useEffect(() => {
 			if (!open) return;
 			setQrTs(Date.now());
-			const id = setInterval(() => setQrTs(Date.now()), 4000);
-			return () => clearInterval(id);
+			const qrId = setInterval(() => setQrTs(Date.now()), 4000);
+			const fetchStatus = (): void => {
+				void win
+					.fetch?.(`${win.location?.origin ?? ""}/plugins/lark-link/status`)
+					.then((r) => (r.ok ? r.json() : Promise.reject(new Error("status"))))
+					.then((s) => setStatusLine(formatStatus(s as BridgeStatus)))
+					.catch(() => setStatusLine(""));
+			};
+			fetchStatus();
+			const stId = setInterval(fetchStatus, 3000);
+			return () => {
+				clearInterval(qrId);
+				clearInterval(stId);
+			};
 		}, [open]);
 
 		const origin = win.location?.origin ?? "";
@@ -105,19 +136,16 @@ export function apply(ctx: ClientContext): void {
 
 		if (!open) return button;
 
-		// Single img drives load detection; hidden (but still fetched) until it
-		// loads, so onLoad/onError toggle the visible QR vs. the setup hint.
+		const statusRow = statusLine
+			? h("div", { style: { marginBottom: "10px", padding: "6px 8px", background: "rgba(255,255,255,.05)", borderRadius: "6px" } }, statusLine)
+			: null;
+
 		const qrImg = h("img", {
 			src: qrSrc,
 			alt: "Lark Link setup QR",
 			onError: () => setQrLoaded(false),
 			onLoad: () => setQrLoaded(true),
-			style: {
-				width: "220px",
-				height: "220px",
-				display: qrLoaded ? "block" : "none",
-				margin: "0 auto",
-			},
+			style: { width: "220px", height: "220px", display: qrLoaded ? "block" : "none", margin: "0 auto" },
 		});
 		const qrHint = qrLoaded
 			? null
@@ -176,13 +204,10 @@ export function apply(ctx: ClientContext): void {
 					"×",
 				),
 			),
+			statusRow,
 			qrImg,
 			qrHint,
-			h(
-				"div",
-				{ style: { marginTop: "12px", marginBottom: "6px", opacity: 0.8 } },
-				"命令（在输入框输入）：",
-			),
+			h("div", { style: { marginTop: "12px", marginBottom: "6px", opacity: 0.8 } }, "命令（在输入框输入）："),
 			h("div", null, ...rows),
 			h(
 				"div",

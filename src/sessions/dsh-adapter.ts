@@ -25,7 +25,7 @@ export interface DshAdapterDeps {
 
 /** Agent registry surface we consume (dsh-agent). */
 interface AgentRegistrySurface {
-  create(opts: { sessionId: string; seed?: unknown }): Promise<AgentHandleSurface>;
+  create(opts: { sessionId: string }): Promise<AgentHandleSurface>;
   get(id: string): Agent | undefined;
 }
 
@@ -89,7 +89,10 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
     const sessionId = bridgeKey(key);
     let owned: AgentHandleSurface;
     try {
-      owned = await c.agents.create({ sessionId, seed: { bridge: true, conversationKey: key } });
+      // CreateAgentOptions.seed is `readonly SessionEvent[]` (a fork prefix);
+      // a fresh per-conversation agent needs none. Passing a plain object
+      // here throws "seed.entries is not a function".
+      owned = await c.agents.create({ sessionId });
     } catch (err) {
       throw new Error(`failed to create DSH agent for ${key}: ${String(err)}`);
     }

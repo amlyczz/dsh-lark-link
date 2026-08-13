@@ -35,7 +35,6 @@ import {
 	createCommandRouter,
 	type DshCommandRegistry,
 } from "./application/command-router.ts";
-import { createNotificationService } from "./application/notification-service.ts";
 import { createDiagnosticsService } from "./application/diagnostics-service.ts";
 import {
 	formatStatusLine,
@@ -47,7 +46,6 @@ import { createLogger, type Logger } from "./common/logger.ts";
 import { createDedupeStore } from "./common/dedupe-store.ts";
 import { createQuotaGovernor } from "./common/quota-governor.ts";
 import { helpCard } from "./presentation/cards.ts";
-import { acquireGatewayLock } from "./host/gateway-lock.ts";
 import { createAuthSetup } from "./host/auth-setup.ts";
 import {
 	resolveCredentials,
@@ -167,7 +165,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					path: "/plugins/lark-link/qr",
 					handler: (_req, res) => {
 						const r = res as {
-							writeHead(status: number, headers: Record<string, string>): unknown;
+							writeHead(
+								status: number,
+								headers: Record<string, string>,
+							): unknown;
 							end(body?: unknown): unknown;
 						};
 						if (activeQr && Date.now() < activeQr.expireAt) {
@@ -183,6 +184,25 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					},
 				}),
 			"lark-link: webui qr route",
+		);
+		ctx.effect(
+			() =>
+				webServer.register({
+					kind: "exact",
+					path: "/plugins/lark-link/status",
+					handler: (_req, res) => {
+						const r = res as {
+							writeHead(s: number, h: Record<string, string>): unknown;
+							end(body?: unknown): unknown;
+						};
+						r.writeHead(200, {
+							"Content-Type": "application/json; charset=utf-8",
+							"Cache-Control": "no-store",
+						});
+						r.end(JSON.stringify(status.get()));
+					},
+				}),
+			"lark-link: webui status route",
 		);
 	}
 
@@ -737,12 +757,21 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 							qrInfo = info;
 							// Render a PNG for the Web GUI panel (host-served route) and mirror
 							// an ASCII QR to the terminal for TTY users.
-							void QRCode.toBuffer(info.url, { type: "png", margin: 1, width: 256 })
+							void QRCode.toBuffer(info.url, {
+								type: "png",
+								margin: 1,
+								width: 256,
+							})
 								.then((png) => {
-									activeQr = { png, expireAt: Date.now() + info.expireIn * 1000 };
+									activeQr = {
+										png,
+										expireAt: Date.now() + info.expireIn * 1000,
+									};
 								})
 								.catch((e) =>
-									logger.warn(`qr png failed: ${e instanceof Error ? e.message : String(e)}`),
+									logger.warn(
+										`qr png failed: ${e instanceof Error ? e.message : String(e)}`,
+									),
 								);
 							try {
 								qrcode.generate(info.url, { small: true }, (qr) =>
