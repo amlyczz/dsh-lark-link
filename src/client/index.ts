@@ -55,7 +55,13 @@ interface StatusPayload {
 	outboxFailed?: number;
 }
 
-type PanelState = "loading" | "setup" | "ready" | "connecting" | "running" | "error";
+type PanelState =
+	| "loading"
+	| "setup"
+	| "ready"
+	| "connecting"
+	| "running"
+	| "error";
 
 function deriveState(s: StatusPayload | undefined): PanelState {
 	if (!s) return "loading";
@@ -78,11 +84,41 @@ const STATE_VIEW: Record<
 	Exclude<PanelState, "loading">,
 	{ emoji: string; label: string; color: string; bg: string; hint: string }
 > = {
-	setup: { emoji: "⚙️", label: "未配置", color: "#ffb454", bg: "rgba(255,180,84,.12)", hint: "手机飞书扫码，或在输入框运行 /lark setup" },
-	ready: { emoji: "✅", label: "已配置 · 待启动", color: "#7fd1ff", bg: "rgba(127,209,255,.12)", hint: "在输入框运行 /lark start 启动桥接" },
-	connecting: { emoji: "🟡", label: "连接中…", color: "#ffd66b", bg: "rgba(255,214,107,.12)", hint: "正在建立飞书长连接" },
-	running: { emoji: "🟢", label: "运行中", color: "#7ee2a8", bg: "rgba(126,226,168,.12)", hint: "/lark stop · /lark restart · 发消息即可对话" },
-	error: { emoji: "🔴", label: "连接异常", color: "#ff8a80", bg: "rgba(255,138,128,.12)", hint: "/lark restart 重连 · /lark status 查看详情" },
+	setup: {
+		emoji: "⚙️",
+		label: "未配置",
+		color: "#ffb454",
+		bg: "rgba(255,180,84,.12)",
+		hint: "手机飞书扫码，或在输入框运行 /lark setup",
+	},
+	ready: {
+		emoji: "✅",
+		label: "已配置 · 待启动",
+		color: "#7fd1ff",
+		bg: "rgba(127,209,255,.12)",
+		hint: "在输入框运行 /lark start 启动桥接",
+	},
+	connecting: {
+		emoji: "🟡",
+		label: "连接中…",
+		color: "#ffd66b",
+		bg: "rgba(255,214,107,.12)",
+		hint: "正在建立飞书长连接",
+	},
+	running: {
+		emoji: "🟢",
+		label: "运行中",
+		color: "#7ee2a8",
+		bg: "rgba(126,226,168,.12)",
+		hint: "/lark stop · /lark restart · 发消息即可对话",
+	},
+	error: {
+		emoji: "🔴",
+		label: "连接异常",
+		color: "#ff8a80",
+		bg: "rgba(255,138,128,.12)",
+		hint: "/lark restart 重连 · /lark status 查看详情",
+	},
 };
 
 export function apply(ctx: ClientContext): void {
@@ -145,12 +181,20 @@ export function apply(ctx: ClientContext): void {
 
 		const view =
 			state === "loading"
-				? { emoji: "…", label: "读取状态", color: "#9aa0a6", bg: "rgba(255,255,255,.05)", hint: "" }
+				? {
+						emoji: "…",
+						label: "读取状态",
+						color: "#9aa0a6",
+						bg: "rgba(255,255,255,.05)",
+						hint: "",
+					}
 				: STATE_VIEW[state];
 
 		const extras: string[] = [];
-		if (st?.outboxPending && st.outboxPending > 0) extras.push(`待发 ${st.outboxPending}`);
-		if (st?.outboxFailed && st.outboxFailed > 0) extras.push(`失败 ${st.outboxFailed}`);
+		if (st?.outboxPending && st.outboxPending > 0)
+			extras.push(`待发 ${st.outboxPending}`);
+		if (st?.outboxFailed && st.outboxFailed > 0)
+			extras.push(`失败 ${st.outboxFailed}`);
 
 		const banner = h(
 			"div",
@@ -169,11 +213,34 @@ export function apply(ctx: ClientContext): void {
 			},
 			h("span", { style: { fontSize: "16px" } }, view.emoji),
 			h("span", null, view.label),
-			extras.length ? h("span", { style: { marginLeft: "auto", fontWeight: 400, opacity: 0.8, fontSize: "11px" } }, extras.join(" · ")) : null,
+			extras.length
+				? h(
+						"span",
+						{
+							style: {
+								marginLeft: "auto",
+								fontWeight: 400,
+								opacity: 0.8,
+								fontSize: "11px",
+							},
+						},
+						extras.join(" · "),
+					)
+				: null,
 		);
 
 		const hint = view.hint
-			? h("div", { style: { opacity: 0.8, marginBottom: "10px", whiteSpace: "pre-wrap" } }, view.hint)
+			? h(
+					"div",
+					{
+						style: {
+							opacity: 0.8,
+							marginBottom: "10px",
+							whiteSpace: "pre-wrap",
+						},
+					},
+					view.hint,
+				)
 			: null;
 
 		// QR only while unconfigured; hidden (but fetched) until it loads.
@@ -183,14 +250,26 @@ export function apply(ctx: ClientContext): void {
 					alt: "Lark Link setup QR",
 					onError: () => setQrLoaded(false),
 					onLoad: () => setQrLoaded(true),
-					style: { width: "220px", height: "220px", display: qrLoaded ? "block" : "none", margin: "0 auto 10px" },
+					style: {
+						width: "220px",
+						height: "220px",
+						display: qrLoaded ? "block" : "none",
+						margin: "0 auto 10px",
+					},
 				})
 			: null;
 		const qrHint =
 			showQr && !qrLoaded
 				? h(
 						"div",
-						{ style: { textAlign: "center", opacity: 0.6, padding: "8px 0 12px", fontSize: "11px" } },
+						{
+							style: {
+								textAlign: "center",
+								opacity: 0.6,
+								padding: "8px 0 12px",
+								fontSize: "11px",
+							},
+						},
 						"二维码生成中…（若无，确认已在输入框运行 /lark setup）",
 					)
 				: null;
@@ -235,14 +314,28 @@ export function apply(ctx: ClientContext): void {
 			},
 			h(
 				"div",
-				{ style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" } },
+				{
+					style: {
+						display: "flex",
+						justifyContent: "space-between",
+						alignItems: "center",
+						marginBottom: "10px",
+					},
+				},
 				h("strong", { style: { fontSize: "13px" } }, "🪶 Lark Link"),
 				h(
 					"button",
 					{
 						type: "button",
 						onClick: () => setOpen(false),
-						style: { background: "transparent", border: "none", color: "#9aa0a6", cursor: "pointer", fontSize: "16px", lineHeight: 1 },
+						style: {
+							background: "transparent",
+							border: "none",
+							color: "#9aa0a6",
+							cursor: "pointer",
+							fontSize: "16px",
+							lineHeight: 1,
+						},
 						title: "关闭",
 					},
 					"×",
@@ -260,7 +353,12 @@ export function apply(ctx: ClientContext): void {
 
 	ctx.slots.inject("sidebar.footer.action", () =>
 		ctx.slots.register(
-			{ name: "sidebar.footer.action", id: "lark-link-entry", order: 100, label: "Lark Link" },
+			{
+				name: "sidebar.footer.action",
+				id: "lark-link-entry",
+				order: 100,
+				label: "Lark Link",
+			},
 			SidebarAction,
 		),
 	);

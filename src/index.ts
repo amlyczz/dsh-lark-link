@@ -715,14 +715,18 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					return formatStatusLine(status.get());
 				case "start":
 					await startBridge();
-					return lifecycleStarted ? "bridge started" : (startBlocker ?? "bridge 未启动");
+					return lifecycleStarted
+						? "bridge started"
+						: (startBlocker ?? "bridge 未启动");
 				case "stop":
 					await stopBridge();
 					return "bridge stopped";
 				case "restart":
 					await stopBridge();
 					await startBridge();
-					return lifecycleStarted ? "bridge restarted" : (startBlocker ?? "bridge 未启动");
+					return lifecycleStarted
+						? "bridge restarted"
+						: (startBlocker ?? "bridge 未启动");
 				case "setup":
 					return await runSetup();
 				case "uninstall-clean":
@@ -734,124 +738,122 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	);
 
 	const runSetup = async (): Promise<string> => {
-			const ref = getCfg().credentialRef;
-			// Manual channel via env (headless / GUI / CI).
-			const envAppId = process.env.DSH_LARK_APP_ID?.trim();
-			const envSecret = process.env.DSH_LARK_APP_SECRET?.trim();
-			if (envAppId && envSecret) {
-				const envDomain = (
-					process.env.DSH_LARK_DOMAIN === "lark" ? "lark" : "feishu"
-				) as LarkDomain;
-				await persistCredentials(credStore, ref, {
-					appId: envAppId,
-					appSecret: envSecret,
-					domain: envDomain,
-				});
-				return `凭据已保存（env 手动，appId=${maskId(envAppId)}，domain=${envDomain}）。运行 /lark start 启动。`;
-			}
-			// QR channel — NON-BLOCKING. registerApp only resolves AFTER the user
-			// scans; awaiting it would hang the GUI ("执行中…") and the QR was only
-			// going to host stdout. So: run registerApp detached in the background
-			// (persists creds on scan), surface the QR URL to the GUI as soon as
-			// onQRCodeReady fires, and return immediately.
-			const lark = await import("@larksuiteoapi/node-sdk");
-			let qrInfo: { url: string; expireIn: number } | undefined;
-			void (async () => {
-				const setup = createAuthSetup({
-					registerApp: lark.registerApp,
-					persist: async (c) => {
-						await persistCredentials(credStore, ref, c);
-					},
-					logger,
-				});
-				try {
-					const res = await setup.run({
-						onQRCodeReady(info) {
-							qrInfo = info;
-							// Render a PNG for the Web GUI panel (host-served route) and mirror
-							// an ASCII QR to the terminal for TTY users.
-							void QRCode.toBuffer(info.url, {
-								type: "png",
-								margin: 1,
-								width: 256,
+		const ref = getCfg().credentialRef;
+		// Manual channel via env (headless / GUI / CI).
+		const envAppId = process.env.DSH_LARK_APP_ID?.trim();
+		const envSecret = process.env.DSH_LARK_APP_SECRET?.trim();
+		if (envAppId && envSecret) {
+			const envDomain = (
+				process.env.DSH_LARK_DOMAIN === "lark" ? "lark" : "feishu"
+			) as LarkDomain;
+			await persistCredentials(credStore, ref, {
+				appId: envAppId,
+				appSecret: envSecret,
+				domain: envDomain,
+			});
+			return `凭据已保存（env 手动，appId=${maskId(envAppId)}，domain=${envDomain}）。运行 /lark start 启动。`;
+		}
+		// QR channel — NON-BLOCKING. registerApp only resolves AFTER the user
+		// scans; awaiting it would hang the GUI ("执行中…") and the QR was only
+		// going to host stdout. So: run registerApp detached in the background
+		// (persists creds on scan), surface the QR URL to the GUI as soon as
+		// onQRCodeReady fires, and return immediately.
+		const lark = await import("@larksuiteoapi/node-sdk");
+		let qrInfo: { url: string; expireIn: number } | undefined;
+		void (async () => {
+			const setup = createAuthSetup({
+				registerApp: lark.registerApp,
+				persist: async (c) => {
+					await persistCredentials(credStore, ref, c);
+				},
+				logger,
+			});
+			try {
+				const res = await setup.run({
+					onQRCodeReady(info) {
+						qrInfo = info;
+						// Render a PNG for the Web GUI panel (host-served route) and mirror
+						// an ASCII QR to the terminal for TTY users.
+						void QRCode.toBuffer(info.url, {
+							type: "png",
+							margin: 1,
+							width: 256,
+						})
+							.then((png) => {
+								activeQr = {
+									png,
+									expireAt: Date.now() + info.expireIn * 1000,
+								};
 							})
-								.then((png) => {
-									activeQr = {
-										png,
-										expireAt: Date.now() + info.expireIn * 1000,
-									};
-								})
-								.catch((e) =>
-									logger.warn(
-										`qr png failed: ${e instanceof Error ? e.message : String(e)}`,
-									),
-								);
-							try {
-								qrcode.generate(info.url, { small: true }, (qr) =>
-									console.log(`\n${qr}`),
-								);
-							} catch {
-								// qrcode-terminal optional
-							}
-						},
-						onStatusChange: (s) => logger.info(`setup: ${s}`),
-					});
-					logger.info(
-						`setup complete: appId=${res.appId} domain=${res.domain}`,
-					);
-					activeQr = undefined;
-				} catch (err) {
-					logger.warn(
-						`setup background failed: ${err instanceof Error ? err.message : String(err)}`,
-					);
-					activeQr = undefined;
-				}
-			})();
-			// Bounded wait for the QR to appear (registerApp reaches Feishu first).
-			const deadline = Date.now() + 30_000;
-			while (!qrInfo && Date.now() < deadline) {
-				await new Promise((r) => setTimeout(r, 200));
+							.catch((e) =>
+								logger.warn(
+									`qr png failed: ${e instanceof Error ? e.message : String(e)}`,
+								),
+							);
+						try {
+							qrcode.generate(info.url, { small: true }, (qr) =>
+								console.log(`\n${qr}`),
+							);
+						} catch {
+							// qrcode-terminal optional
+						}
+					},
+					onStatusChange: (s) => logger.info(`setup: ${s}`),
+				});
+				logger.info(`setup complete: appId=${res.appId} domain=${res.domain}`);
+				activeQr = undefined;
+			} catch (err) {
+				logger.warn(
+					`setup background failed: ${err instanceof Error ? err.message : String(err)}`,
+				);
+				activeQr = undefined;
 			}
-			if (!qrInfo) {
-				return "扫码流程未在 30s 内就绪。可改用手动通道：设 DSH_LARK_APP_ID + DSH_LARK_APP_SECRET 后再 /lark setup。";
-			}
-			console.log(
-				`飞书授权二维码链接: ${qrInfo.url}（${qrInfo.expireIn} 秒后过期）`,
-			);
-			return [
-				"📱 飞书授权二维码已生成 —— 见左侧 🪶 Lark 面板（或终端），手机飞书扫码确认。",
-				"",
-				`二维码 ${qrInfo.expireIn} 秒后过期。扫码后凭据在后台写入，运行 /lark start 启动。`,
-				`备用链接（手机浏览器打开）：${qrInfo.url}`,
-				"看不到二维码？终端也打印了；或用 DSH_LARK_APP_ID/SECRET 手动通道。",
-			].join("\n");
+		})();
+		// Bounded wait for the QR to appear (registerApp reaches Feishu first).
+		const deadline = Date.now() + 30_000;
+		while (!qrInfo && Date.now() < deadline) {
+			await new Promise((r) => setTimeout(r, 200));
+		}
+		if (!qrInfo) {
+			return "扫码流程未在 30s 内就绪。可改用手动通道：设 DSH_LARK_APP_ID + DSH_LARK_APP_SECRET 后再 /lark setup。";
+		}
+		console.log(
+			`飞书授权二维码链接: ${qrInfo.url}（${qrInfo.expireIn} 秒后过期）`,
+		);
+		return [
+			"📱 飞书授权二维码已生成 —— 见左侧 🪶 Lark 面板（或终端），手机飞书扫码确认。",
+			"",
+			`二维码 ${qrInfo.expireIn} 秒后过期。扫码后凭据在后台写入，运行 /lark start 启动。`,
+			`备用链接（手机浏览器打开）：${qrInfo.url}`,
+			"看不到二维码？终端也打印了；或用 DSH_LARK_APP_ID/SECRET 手动通道。",
+		].join("\n");
 	};
 
 	const runUninstallClean = async (): Promise<string> => {
-			await stopBridge();
-			const ref = getCfg().credentialRef;
-			await clearCredentials(credStore, ref);
-			larkClient = undefined;
-			for (const f of [
-				"config.json",
-				"routes.json",
-				"dedupe.jsonl",
-				"conn-history.jsonl",
-				"status.json",
-				"runtime-overrides.json",
-			]) {
-				try {
-					rmSync(join(dir, f), { force: true });
-				} catch {
-					// best effort
-				}
-			}
+		await stopBridge();
+		const ref = getCfg().credentialRef;
+		await clearCredentials(credStore, ref);
+		larkClient = undefined;
+		for (const f of [
+			"config.json",
+			"routes.json",
+			"dedupe.jsonl",
+			"conn-history.jsonl",
+			"status.json",
+			"runtime-overrides.json",
+		]) {
 			try {
-				rmSync(join(dir, "outbox"), { recursive: true, force: true });
+				rmSync(join(dir, f), { force: true });
 			} catch {
 				// best effort
 			}
-			return `已清除凭据（ref=${ref}）并清理状态目录 ${dir}。重新使用请运行 /lark setup。`;
+		}
+		try {
+			rmSync(join(dir, "outbox"), { recursive: true, force: true });
+		} catch {
+			// best effort
+		}
+		return `已清除凭据（ref=${ref}）并清理状态目录 ${dir}。重新使用请运行 /lark setup。`;
 	};
 
 	// ---- system prompt section ---------------------------------------------------

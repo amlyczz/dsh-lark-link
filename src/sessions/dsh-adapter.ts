@@ -31,6 +31,8 @@ export interface DshAdapterDeps {
 /** Agent registry surface we consume (dsh-agent). */
 interface AgentRegistrySurface {
 	create(opts: { sessionId: string }): Promise<AgentHandleSurface>;
+	/** Load a persisted session and resume an agent on it (create rejects on collision). */
+	resume(opts: { resumeSessionId: string }): Promise<AgentHandleSurface>;
 	get(id: string): Agent | undefined;
 }
 
@@ -105,11 +107,25 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		let owned: AgentHandleSurface;
 		try {
 			// CreateAgentOptions.seed is `readonly SessionEvent[]` (a fork prefix);
-			// a fresh per-conversation agent needs none. Passing a plain object
-			// here throws "seed.entries is not a function".
+			// a fresh per-conversation agent needs none.
 			owned = await c.agents.create({ sessionId });
 		} catch (err) {
-			throw new Error(`failed to create DSH agent for ${key}: ${String(err)}`);
+			const msg = err instanceof Error ? err.message : String(err);
+			// A persisted log already exists for this sessionId (bridge restart, or
+			// idle-dispose then re-create): the session-persistence coordinator
+			// rejects create with "id collision" / "already has a persisted log".
+			// Resume the persisted session instead of recreating it.
+			if (/persisted log|id collision|already/i.test(msg)) {
+				try {
+					owned = await c.agents.resume({ resumeSessionId: sessionId });
+				} catch (err2) {
+					throw new Error(
+						`failed to resume DSH agent for ${key}: ${err2 instanceof Error ? err2.message : String(err2)}`,
+					);
+				}
+			} else {
+				throw new Error(`failed to create DSH agent for ${key}: ${msg}`);
+			}
 		}
 		if (!owned?.agent)
 			throw new Error(`DSH agents.create returned no agent for ${key}`);
@@ -174,7 +190,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		keyForSessionId: (sessionId) => keyBySession.get(sessionId),
 		disposeIdle(idleTtlMs) {
 			let n = 0;
-			for (const [key, t] of tracked) {
+			for (const t of tracked.values()) {
 				if (t.handle.isIdle() && Date.now() - t.lastUsedAt >= idleTtlMs) {
 					void t.handle.dispose();
 					n++;
