@@ -36,13 +36,22 @@ import { createQuotaGovernor } from "./common/quota-governor.ts";
 import { helpCard } from "./presentation/cards.ts";
 import { acquireGatewayLock } from "./host/gateway-lock.ts";
 import { createAuthSetup } from "./host/auth-setup.ts";
+import {
+  resolveCredentials,
+  persistCredentials,
+  clearCredentials,
+  buildLarkClient,
+  type CredentialsStore,
+  type LarkDomain,
+} from "./host/lark-client.ts";
+import * as qrcode from "qrcode-terminal";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, rmSync } from "node:fs";
 import type { FeishuInboundMessage } from "./common/types.ts";
 
 export const name = "dsh-lark-link";
-export const inject = ["tools", "commands", "agents", "systemPrompt"];
+export const inject = ["tools", "commands", "agents", "systemPrompt", "credentials"];
 
 export interface LarkLinkConfig {
   enabled?: boolean;
@@ -85,6 +94,19 @@ export function apply(ctx: Context, rawConfig: unknown): void {
   // ---- lark client (lazily built from credentials at start) ---------------
   let larkClient: FeishuClientLike | undefined;
   const getLarkClient = (): FeishuClientLike | undefined => larkClient;
+
+  // Credentials live in ctx.credentials under config.credentialRef (ref-style,
+  // spec §4.1). Harness-agnostic adapter — no-ops if the service is absent.
+  const credStore: CredentialsStore = {
+    resolve: (ref) =>
+      (ctx as unknown as { credentials?: CredentialsStore }).credentials?.resolve(ref) ?? Promise.resolve(undefined),
+    set: (ref, value) =>
+      (ctx as unknown as { credentials?: CredentialsStore }).credentials?.set(ref, value) ?? Promise.resolve(),
+    unset: (ref) =>
+      (ctx as unknown as { credentials?: CredentialsStore }).credentials?.unset(ref) ?? Promise.resolve(),
+  };
+  let startBlocker: string | undefined;
+  const maskId = (id: string): string => (id.length <= 8 ? "****" : `${id.slice(0, 6)}…${id.slice(-4)}`);
 
   // ---- sender (outbox target) ----------------------------------------------
   const sender: FeishuSender = {
@@ -311,7 +333,25 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 
   const startBridge = async (): Promise<void> => {
     if (lifecycleStarted) return;
+    // Resolve credentials + build the lark client before wiring the transport.
+    // Missing credentials is NOT fatal (the plugin must still load) — bail with
+    // a clear blocker so /lark start reports it and the plugin survives.
+    const ref = getCfg().credentialRef;
+    const creds = await resolveCredentials(credStore, ref);
+    if (!creds) {
+      startBlocker = `未配置飞书凭据（ref=${ref}）。请先运行 /lark setup 扫码，或设置 DSH_LARK_APP_ID/DSH_LARK_APP_SECRET 后再 /lark setup。`;
+      logger.warn(startBlocker);
+      return;
+    }
+    startBlocker = undefined;
     logger.info("starting bridge…");
+    try {
+      larkClient = await buildLarkClient({ appId: creds.appId, appSecret: creds.appSecret, domain: creds.domain, logger });
+    } catch (err) {
+      startBlocker = `lark client 构建失败: ${err instanceof Error ? err.message : String(err)}`;
+      logger.error(startBlocker);
+      return;
+    }
     bridge.setConversations(conversations);
     bridge.setOutbox(outbox);
     bridge.setForwarder(forwarder);
@@ -405,13 +445,27 @@ export function apply(ctx: Context, rawConfig: unknown): void {
         const route = routeStore.get(key);
         if (!route) return "错误: 无法定位当前飞书会话";
         const client = getLarkClient();
-        if (!client?.uploadFile) return "错误: lark 客户端未就绪";
+        if (!client) return "错误: lark 客户端未就绪";
         const isImage = args.kind === "image";
-        const up = await client.uploadFile({ file_type: isImage ? "image" : "file", file_name: args.path.split(/[\\/]/).pop() ?? "file" });
+        if (isImage ? !client.uploadImage : !client.uploadFile) return "错误: lark 客户端未就绪";
+        let buf: Buffer;
+        try {
+          const st = statSync(abs);
+          if (st.size > 25 * 1024 * 1024) return "错误: 文件超过 25MB 上限";
+          buf = readFileSync(abs);
+        } catch (err) {
+          return `错误: 读取文件失败 (${err instanceof Error ? err.message : String(err)})`;
+        }
+        const fileName = args.path.split(/[\\/]/).pop() ?? "file";
         // Tolerate both real top-level and legacy {data:{...}} shapes (pi 2026-08-14).
-        const fileKey = extractUploadKey(up, "file_key");
-        if (!fileKey) return "错误: 上传失败";
-        await sender.sendFile(route.chatId, fileKey, isImage ? "image" : "file");
+        let uploadKey: string | undefined;
+        if (isImage) {
+          uploadKey = extractUploadKey(await client.uploadImage!({ image: buf }), "image_key");
+        } else {
+          uploadKey = extractUploadKey(await client.uploadFile!({ file_type: "file", file_name: fileName, file: buf }), "file_key");
+        }
+        if (!uploadKey) return "错误: 上传失败";
+        await sender.sendFile(route.chatId, uploadKey, isImage ? "image" : "file");
         return `已发送 ${args.path}`;
       },
     }),
@@ -436,7 +490,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
   registerCmd("lark-status", "Show Lark Link bridge status", async () => formatStatusLine(status.get()));
   registerCmd("lark-start", "Start the bridge", async () => {
     await startBridge();
-    return "bridge started";
+    return lifecycleStarted ? "bridge started" : (startBlocker ?? "bridge 未启动");
   });
   registerCmd("lark-stop", "Stop the bridge", async () => {
     await stopBridge();
@@ -445,7 +499,64 @@ export function apply(ctx: Context, rawConfig: unknown): void {
   registerCmd("lark-restart", "Restart the bridge", async () => {
     await stopBridge();
     await startBridge();
-    return "bridge restarted";
+    return lifecycleStarted ? "bridge restarted" : (startBlocker ?? "bridge 未启动");
+  });
+
+  registerCmd(
+    "lark-setup",
+    "Scan QR (or set DSH_LARK_APP_ID/DSH_LARK_APP_SECRET env) to configure Feishu credentials",
+    async () => {
+      const ref = getCfg().credentialRef;
+      // Manual channel via env (headless / GUI / CI).
+      const envAppId = process.env.DSH_LARK_APP_ID?.trim();
+      const envSecret = process.env.DSH_LARK_APP_SECRET?.trim();
+      if (envAppId && envSecret) {
+        const envDomain = (process.env.DSH_LARK_DOMAIN === "lark" ? "lark" : "feishu") as LarkDomain;
+        await persistCredentials(credStore, ref, { appId: envAppId, appSecret: envSecret, domain: envDomain });
+        return `凭据已保存（env 手动，appId=${maskId(envAppId)}，domain=${envDomain}）。运行 /lark start 启动。`;
+      }
+      // QR channel — registerApp blocks until the user scans.
+      const lark = await import("@larksuiteoapi/node-sdk");
+      const setup = createAuthSetup({
+        registerApp: lark.registerApp,
+        persist: async (c) => {
+          await persistCredentials(credStore, ref, c);
+        },
+        logger,
+      });
+      const result = await setup.run({
+        onQRCodeReady(info) {
+          try {
+            qrcode.generate(info.url, { small: true }, (qr) => console.log(`\n${qr}`));
+          } catch {
+            // qrcode-terminal optional — URL still printed below
+          }
+          console.log(`飞书授权二维码链接: ${info.url}（${info.expireIn} 秒后过期）`);
+        },
+        onStatusChange: (s) => logger.info(`setup: ${s}`),
+      });
+      return `飞书应用创建成功 ✅  appId=${result.appId}  domain=${result.domain}\n凭据已写入 ctx.credentials（ref=${ref}）。运行 /lark start 启动桥接。`;
+    },
+  );
+
+  registerCmd("lark-uninstall-clean", "Remove credentials + wipe bridge state (irreversible)", async () => {
+    await stopBridge();
+    const ref = getCfg().credentialRef;
+    await clearCredentials(credStore, ref);
+    larkClient = undefined;
+    for (const f of ["config.json", "routes.json", "dedupe.jsonl", "conn-history.jsonl", "status.json", "runtime-overrides.json"]) {
+      try {
+        rmSync(join(dir, f), { force: true });
+      } catch {
+        // best effort
+      }
+    }
+    try {
+      rmSync(join(dir, "outbox"), { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+    return `已清除凭据（ref=${ref}）并清理状态目录 ${dir}。重新使用请运行 /lark setup。`;
   });
 
   // ---- system prompt section ---------------------------------------------------

@@ -183,10 +183,10 @@ export interface FeishuClientLike {
   getBotInfo?(): Promise<{ open_id?: string; name?: string }>;
   /** Send a message (REST). */
   sendMessage?(params: unknown): Promise<unknown>;
-  /** Upload a file/image to Feishu. The real SDK returns TOP-LEVEL keys;
+  /** Upload a file to Feishu. The real SDK returns TOP-LEVEL keys;
    * legacy shapes nest under {data:{...}} — both tolerated (pi 2026-08-14 fix). */
-  uploadFile?(params: unknown): Promise<{ file_key?: string } | { data?: { file_key?: string } }>;
-  uploadImage?(params: unknown): Promise<{ image_key?: string } | { data?: { image_key?: string } }>;
+  uploadFile?(params: { file_type: string; file_name?: string; file: Buffer }): Promise<{ file_key?: string } | { data?: { file_key?: string } }>;
+  uploadImage?(params: { image: Buffer }): Promise<{ image_key?: string } | { data?: { image_key?: string } }>;
   /** Add a reaction. */
   addReaction?(params: unknown): Promise<unknown>;
   /** List messages in a chat (for missed-compensation). */

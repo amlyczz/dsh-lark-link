@@ -61,18 +61,21 @@ npm run build      # tsdown → dist/（宿主 ESM + client ModuleLoader 包）
 npm pack           # 产出可分发 tarball
 ```
 
-
 ## 命令
 
 ### DSH 侧（CLI / GUI composer）
 
 ```
-/lark setup      扫码建应用（二维码同时出现在终端与 Web GUI 面板）
-/lark start      启动桥接
-/lark stop       停止（不断凭据/配置）
-/lark restart    重启
-/lark status     全链路健康视图
+/lark setup            扫码建应用（终端出二维码；addons 自动订阅消息事件 + 群聊全量 + 表情权限）
+                       手动通道：设 DSH_LARK_APP_ID + DSH_LARK_APP_SECRET（可选 DSH_LARK_DOMAIN=lark）后再跑
+/lark start            启动桥接（未配置凭据会提示先 /lark setup，不会崩溃）
+/lark stop             停止（不断凭据/配置）
+/lark restart          重启
+/lark status           全链路健康视图
+/lark uninstall-clean  清除凭据 + 清空状态目录（不可逆；配置/凭据一并清除）
 ```
+
+> 凭据只进 `ctx.credentials`（ref `LARK_LINK_APP`，存为 JSON blob `{appId,appSecret,domain}`）；`config.json` 只存 ref，不含密钥。
 
 ### 飞书侧（三级分流）
 

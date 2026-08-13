@@ -8,7 +8,8 @@ import { dirname, join } from "node:path";
 export type GroupPolicy = "open" | "mention" | "keywords" | "reply";
 
 export interface FeishuConfig {
-  /** Ref key into ctx.credentials for the app secret (never the secret itself). */
+  /** Ref key into ctx.credentials for the app secret (never the secret itself).
+   * Must match credentialRef() pattern ^[A-Za-z_][A-Za-z0-9_]*$ (no dots). */
   credentialRef: string;
   /** Group trigger policy. */
   groupPolicy: GroupPolicy;
@@ -71,7 +72,7 @@ export interface FeishuConfig {
 }
 
 export const DEFAULT_CONFIG: FeishuConfig = {
-  credentialRef: "lark-link.app",
+  credentialRef: "LARK_LINK_APP",
   groupPolicy: "mention",
   groupKeywords: ["lark", "小斯"],
   alsoOnReply: true,
