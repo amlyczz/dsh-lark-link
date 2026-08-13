@@ -31,8 +31,6 @@ export interface DshAdapterDeps {
 /** Agent registry surface we consume (dsh-agent). */
 interface AgentRegistrySurface {
 	create(opts: { sessionId: string }): Promise<AgentHandleSurface>;
-	/** Load a persisted session and resume an agent on it (create rejects on collision). */
-	resume(opts: { resumeSessionId: string }): Promise<AgentHandleSurface>;
 	get(id: string): Agent | undefined;
 }
 
@@ -94,7 +92,16 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 	const listeners = new Map<string, Set<(e: SessionEventOut) => void>>();
 	const disposers = new Map<string, () => void>();
 
-	const bridgeKey = (key: string): string => `${deps.sessionPrefix}:${key}`;
+	// Per-run session nonce: session ids are stable within a run (so the
+	// keyBySession/route mapping stays consistent) but unique across runs, so
+	// agents.create never collides with a persisted log from a previous run.
+	// (Cross-restart history needs seed-based resume — follow-up.)
+	const runNonce = `${Date.now().toString(36)}${Math
+		.random()
+		.toString(36)
+		.slice(2, 6)}`;
+	const bridgeKey = (key: string): string =>
+		`${deps.sessionPrefix}:${key}:${runNonce}`;
 
 	async function ensureAgent(key: string): Promise<AgentHandle> {
 		const existing = tracked.get(key);
@@ -107,25 +114,14 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		let owned: AgentHandleSurface;
 		try {
 			// CreateAgentOptions.seed is `readonly SessionEvent[]` (a fork prefix);
-			// a fresh per-conversation agent needs none.
+			// a fresh per-conversation agent needs none. The sessionId nonce keeps
+			// this id fresh per run, so create never collides with a persisted log
+			// from a previous run.
 			owned = await c.agents.create({ sessionId });
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			// A persisted log already exists for this sessionId (bridge restart, or
-			// idle-dispose then re-create): the session-persistence coordinator
-			// rejects create with "id collision" / "already has a persisted log".
-			// Resume the persisted session instead of recreating it.
-			if (/persisted log|id collision|already/i.test(msg)) {
-				try {
-					owned = await c.agents.resume({ resumeSessionId: sessionId });
-				} catch (err2) {
-					throw new Error(
-						`failed to resume DSH agent for ${key}: ${err2 instanceof Error ? err2.message : String(err2)}`,
-					);
-				}
-			} else {
-				throw new Error(`failed to create DSH agent for ${key}: ${msg}`);
-			}
+			throw new Error(
+				`failed to create DSH agent for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+			);
 		}
 		if (!owned?.agent)
 			throw new Error(`DSH agents.create returned no agent for ${key}`);
