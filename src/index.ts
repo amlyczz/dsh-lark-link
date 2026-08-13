@@ -691,39 +691,49 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	const registerCmd = (
 		name: string,
 		description: string,
-		handler: () => Promise<string>,
+		handler: (rawInput: string) => Promise<string>,
 	): void => {
 		commandsCtx.commands?.register?.({
 			name,
 			description,
-			handler: async () => ({ kind: "success", text: await handler() }),
+			handler: async (inv: { rawInput?: string }) => ({
+				kind: "success",
+				text: await handler(inv?.rawInput ?? ""),
+			}),
 		});
 	};
-	registerCmd("lark-status", "Show Lark Link bridge status", async () =>
-		formatStatusLine(status.get()),
-	);
-	registerCmd("lark-start", "Start the bridge", async () => {
-		await startBridge();
-		return lifecycleStarted
-			? "bridge started"
-			: (startBlocker ?? "bridge 未启动");
-	});
-	registerCmd("lark-stop", "Stop the bridge", async () => {
-		await stopBridge();
-		return "bridge stopped";
-	});
-	registerCmd("lark-restart", "Restart the bridge", async () => {
-		await stopBridge();
-		await startBridge();
-		return lifecycleStarted
-			? "bridge restarted"
-			: (startBlocker ?? "bridge 未启动");
-	});
-
+	// Single /lark command with subcommand dispatch (DSH command names can't
+	// contain spaces — the space separates name from input — so /lark setup is
+	// command 'lark' + input 'setup', not a 'lark setup' command).
 	registerCmd(
-		"lark-setup",
-		"Scan QR (or set DSH_LARK_APP_ID/DSH_LARK_APP_SECRET env) to configure Feishu credentials",
-		async () => {
+		"lark",
+		"Lark Link bridge — usage: /lark setup|start|stop|restart|status|uninstall-clean",
+		async (rawInput) => {
+			const sub = (rawInput.trim().split(/\s+/)[0] ?? "").toLowerCase();
+			switch (sub) {
+				case "status":
+					return formatStatusLine(status.get());
+				case "start":
+					await startBridge();
+					return lifecycleStarted ? "bridge started" : (startBlocker ?? "bridge 未启动");
+				case "stop":
+					await stopBridge();
+					return "bridge stopped";
+				case "restart":
+					await stopBridge();
+					await startBridge();
+					return lifecycleStarted ? "bridge restarted" : (startBlocker ?? "bridge 未启动");
+				case "setup":
+					return await runSetup();
+				case "uninstall-clean":
+					return await runUninstallClean();
+				default:
+					return "Lark Link 用法：/lark setup | start | stop | restart | status | uninstall-clean";
+			}
+		},
+	);
+
+	const runSetup = async (): Promise<string> => {
 			const ref = getCfg().credentialRef;
 			// Manual channel via env (headless / GUI / CI).
 			const envAppId = process.env.DSH_LARK_APP_ID?.trim();
@@ -815,13 +825,9 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				`备用链接（手机浏览器打开）：${qrInfo.url}`,
 				"看不到二维码？终端也打印了；或用 DSH_LARK_APP_ID/SECRET 手动通道。",
 			].join("\n");
-		},
-	);
+	};
 
-	registerCmd(
-		"lark-uninstall-clean",
-		"Remove credentials + wipe bridge state (irreversible)",
-		async () => {
+	const runUninstallClean = async (): Promise<string> => {
 			await stopBridge();
 			const ref = getCfg().credentialRef;
 			await clearCredentials(credStore, ref);
@@ -846,8 +852,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// best effort
 			}
 			return `已清除凭据（ref=${ref}）并清理状态目录 ${dir}。重新使用请运行 /lark setup。`;
-		},
-	);
+	};
 
 	// ---- system prompt section ---------------------------------------------------
 	try {
