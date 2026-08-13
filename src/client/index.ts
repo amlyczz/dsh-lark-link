@@ -1,23 +1,26 @@
 // dsh-lark-link client half (browser). Reuses the DSH Web GUI entirely
 // (spec §7): bridge sessions are native DSH sessions already rendered by the
-// GUI. This client only adds bridge-specific surfaces:
-//   - a sidebar footer action that toggles a status overlay
-//   - a shell.overlay status panel (bridge health via ctx.remote)
-// Loaded as /plugins/dsh-lark-link/client.js via the "dsh.client" manifest.
+// GUI. This client adds one bridge-specific surface — a sidebar footer action
+// button that opens a self-contained quick-reference popover.
 //
-// Slot registration: `sidebar.footer.action` and `shell.overlay` are both
-// `list` slots (declared by ui-sidebar / ui-layout). The `name` passed to
-// `ctx.slots.register` MUST be the parent slot's name — the entry is
-// identified by `id`. Inventing a fresh `name` throws "slot ... is not
-// declared (a parent entry's children table must declare it)" because no
-// parent ever declared it.
+// Slot registration: `sidebar.footer.action` is a `list` slot (declared by
+// ui-sidebar). The `name` passed to `ctx.slots.register` MUST be the parent
+// slot's name; the entry is identified by `id`. The component owns its own
+// open/close state — no second registration, no cross-entry event coupling
+// (those were the click-does-nothing failure modes). The popover is
+// position:fixed so it escapes any sidebar overflow:hidden ancestor.
+//
+// ctx.remote is a generated facade over fixed host contributions (commands /
+// goals / inventory / …) — a plugin can't register an arbitrary
+// `lark-link/status` method — so the popover shows static command help
+// instead of attempting an RPC that would always reject. Live status lives
+// in the composer via `/lark status`.
 
 import type { Context } from "@deepseek-ai/cordis";
 
 // React is a shared runtime dep of dsh-client-web; the host ModuleLoader
 // resolves it via the closure-factory `require` param (createRequire over the
 // config-tree baseUrl). Never bundled — see tsdown.config.ts client externals.
-// Typed by the minimal surface we use; react ships no bundled types here.
 type ReactApi = {
 	createElement: (
 		type: unknown,
@@ -25,13 +28,12 @@ type ReactApi = {
 		...children: unknown[]
 	) => unknown;
 	useState: <S>(initial: S) => [S, (next: S | ((prev: S) => S)) => void];
-	useEffect: (setup: () => (() => void) | void, deps?: unknown[]) => void;
 };
 const R = require("react") as ReactApi;
-const { createElement: h, useState, useEffect } = R;
+const { createElement: h, useState } = R;
 
 export const name = "dsh-lark-link-client";
-export const inject = ["slots", "connection", "remote"];
+export const inject = ["slots"];
 
 export interface ClientContext extends Context {
 	slots: {
@@ -41,110 +43,76 @@ export interface ClientContext extends Context {
 			Component: (props?: unknown) => unknown,
 		): () => void;
 	};
-	remote: {
-		$call(method: string, ...args: unknown[]): Promise<unknown>;
-		$on(event: string, fn: (payload: unknown) => void): () => void;
-	};
 }
 
-// Browser globals (the client runs in the page realm; the shared tsconfig
-// ships no DOM lib, so reach them structurally off globalThis).
-const win = globalThis as unknown as {
-	dispatchEvent(e: unknown): void;
-	addEventListener(type: string, fn: (e: unknown) => void): void;
-	removeEventListener(type: string, fn: (e: unknown) => void): void;
-	CustomEvent: new (type: string) => unknown;
-};
-
-// Cross-entry toggle: the sidebar button and the shell overlay are separate
-// slot registrations, but they share this module scope. A window event keeps
-// them decoupled without a cross-entry store seat.
-const TOGGLE_EVENT = "lark-link:toggle-panel";
-const STATE_EVENT = "lark-link:state";
+const COMMANDS: ReadonlyArray<{ cmd: string; desc: string }> = [
+	{ cmd: "/lark setup", desc: "扫码建应用（或 DSH_LARK_APP_ID/SECRET 环境变量手动）" },
+	{ cmd: "/lark start", desc: "启动桥接" },
+	{ cmd: "/lark stop", desc: "停止（保留凭据/配置）" },
+	{ cmd: "/lark restart", desc: "重启" },
+	{ cmd: "/lark status", desc: "全链路健康视图" },
+	{ cmd: "/lark uninstall-clean", desc: "清凭据 + 清状态目录（不可逆）" },
+];
 
 export function apply(ctx: ClientContext): void {
-	const dispatch = (type: string): void =>
-		win.dispatchEvent(new win.CustomEvent(type));
+	// Sidebar footer action: a single self-contained component — button +
+	// position:fixed popover. All state is local, so the click always works
+	// regardless of whether any other surface mounts.
+	const SidebarAction = (): unknown => {
+		const [open, setOpen] = useState<boolean>(false);
 
-	// Sidebar footer action: compact button that toggles the status overlay.
-	const SidebarButton = (): unknown =>
-		h(
+		const button = h(
 			"button",
 			{
 				type: "button",
 				title: "Lark Link",
-				onClick: () => dispatch(TOGGLE_EVENT),
+				onClick: () => setOpen((v) => !v),
 				style: {
-					display: "flex",
+					display: "inline-flex",
 					alignItems: "center",
 					gap: "6px",
 					padding: "6px 10px",
-					border: "1px solid rgba(255,255,255,.12)",
+					border: "1px solid rgba(127,127,127,.25)",
 					borderRadius: "8px",
-					background: "transparent",
+					background: open ? "rgba(127,127,127,.18)" : "transparent",
 					color: "inherit",
 					cursor: "pointer",
 					fontSize: "13px",
+					lineHeight: 1,
 				},
 			},
 			"🪶",
 			"Lark",
 		);
 
-	// Shell overlay: a small status card, opened by the sidebar action and by
-	// host-pushed state changes. Best-effort fetch via ctx.remote — the host
-	// half may not have registered "lark-link/status" yet, so degrade cleanly.
-	const StatusPanel = (): unknown => {
-		const [open, setOpen] = useState(false);
-		const [status, setStatus] = useState<string>("连接中…");
+		if (!open) return button;
 
-		const refresh = (): void => {
-			void ctx.remote.$call("lark-link/status").then(
-				(s) =>
-					setStatus(typeof s === "string" ? s : JSON.stringify(s, null, 2)),
-				(e) =>
-					setStatus(
-						`状态不可用: ${e instanceof Error ? e.message : String(e)}`,
-					),
-			);
-		};
+		// position:fixed escapes sidebar overflow clipping; floats over the app.
+		const rows = COMMANDS.map((c) =>
+			h(
+				"div",
+				{ style: { display: "flex", gap: "10px", padding: "3px 0", borderBottom: "1px solid rgba(255,255,255,.06)" } },
+				h("code", { style: { color: "#7fd1ff", flex: "0 0 150px" } }, c.cmd),
+				h("span", { style: { opacity: 0.8 } }, c.desc),
+			),
+		);
 
-		useEffect(() => {
-			const onToggle = (): void => setOpen((v) => !v);
-			const onState = (): void => {
-				setOpen(true);
-				refresh();
-			};
-			win.addEventListener(TOGGLE_EVENT, onToggle);
-			win.addEventListener(STATE_EVENT, onState);
-			return () => {
-				win.removeEventListener(TOGGLE_EVENT, onToggle);
-				win.removeEventListener(STATE_EVENT, onState);
-			};
-		}, []);
-
-		useEffect(() => {
-			if (open) refresh();
-		}, [open]);
-
-		if (!open) return null;
-		return h(
+		const panel = h(
 			"div",
 			{
 				style: {
 					position: "fixed",
-					top: "16px",
-					right: "16px",
-					zIndex: 9999,
-					minWidth: "280px",
-					maxWidth: "360px",
+					top: "12px",
+					right: "12px",
+					zIndex: 2147483000,
+					minWidth: "320px",
+					maxWidth: "400px",
 					padding: "14px 16px",
-					background: "rgba(24,26,32,.96)",
+					background: "rgba(24,26,32,.97)",
 					color: "#e6e8eb",
-					border: "1px solid rgba(255,255,255,.14)",
+					border: "1px solid rgba(255,255,255,.16)",
 					borderRadius: "12px",
-					boxShadow: "0 12px 40px rgba(0,0,0,.45)",
-					pointerEvents: "auto",
+					boxShadow: "0 16px 48px rgba(0,0,0,.5)",
 					fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
 					fontSize: "12px",
 					lineHeight: 1.5,
@@ -152,68 +120,39 @@ export function apply(ctx: ClientContext): void {
 			},
 			h(
 				"div",
-				{
-					style: {
-						display: "flex",
-						justifyContent: "space-between",
-						alignItems: "center",
-						marginBottom: "8px",
-					},
-				},
-				h("strong", { style: { fontSize: "13px" } }, "Lark Link"),
+				{ style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" } },
+				h("strong", { style: { fontSize: "13px" } }, "🪶 Lark Link"),
 				h(
 					"button",
 					{
 						type: "button",
 						onClick: () => setOpen(false),
-						style: {
-							background: "transparent",
-							border: "none",
-							color: "#9aa0a6",
-							cursor: "pointer",
-							fontSize: "16px",
-							lineHeight: 1,
-						},
+						style: { background: "transparent", border: "none", color: "#9aa0a6", cursor: "pointer", fontSize: "16px", lineHeight: 1 },
 						title: "关闭",
 					},
 					"×",
 				),
 			),
 			h(
-				"pre",
-				{
-					style: { margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" },
-				},
-				status,
+				"div",
+				{ style: { marginBottom: "8px", opacity: 0.8 } },
+				"飞书/Lark ↔ DeepSeek Harness 桥接。在输入框输入命令：",
+			),
+			h("div", null, ...rows),
+			h(
+				"div",
+				{ style: { marginTop: "10px", opacity: 0.6, fontSize: "11px" } },
+				"实时状态用 /lark status；发消息到飞书机器人即可端到端连通。",
 			),
 		);
+
+		return h("div", null, button, panel);
 	};
 
 	ctx.slots.inject("sidebar.footer.action", () =>
 		ctx.slots.register(
-			{
-				name: "sidebar.footer.action",
-				id: "lark-link-entry",
-				order: 100,
-				label: "Lark Link",
-			},
-			SidebarButton,
+			{ name: "sidebar.footer.action", id: "lark-link-entry", order: 100, label: "Lark Link" },
+			SidebarAction,
 		),
 	);
-
-	ctx.slots.inject("shell.overlay", () =>
-		ctx.slots.register(
-			{
-				name: "shell.overlay",
-				id: "lark-link-status",
-				order: 100,
-				label: "Lark Link Status",
-			},
-			StatusPanel,
-		),
-	);
-
-	// Host-pushed bridge state changes → fan out as a window event the panel
-	// listens for. Remote events are optional; a missing emitter is harmless.
-	ctx.remote.$on("lark-link/state", () => dispatch(STATE_EVENT));
 }

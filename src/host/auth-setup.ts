@@ -79,7 +79,9 @@ export interface AuthSetup {
 }
 
 /** Detect Lark (international) vs Feishu (China) from the registerApp result. */
-export function detectDomain(userInfo: { tenant_brand?: string } | undefined): LarkDomain {
+export function detectDomain(
+	userInfo: { tenant_brand?: string } | undefined,
+): LarkDomain {
 	return userInfo?.tenant_brand === "lark" ? "lark" : "feishu";
 }
 

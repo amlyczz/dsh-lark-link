@@ -84,9 +84,7 @@
     },
     "client": {
       "inject": [
-        "slots",
-        "connection",
-        "remote"
+        "slots"
       ],
       "platform": "web"
     }
