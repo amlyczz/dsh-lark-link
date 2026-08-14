@@ -39,20 +39,16 @@ test("命令卡片声明 schema 2.0（按钮需 behaviors 回调）", () => {
 	}
 	// setup/error 卡片本来就是 schema 1.0（config + 顶层 elements）。
 	for (const card of [setupCard("https://x", 300), errorCard("oops")]) {
-		assert.equal((card as Json).schema, undefined, "1.0 卡片不声明 schema");
+		assert.equal((card as Json).schema, "2.0");
 	}
 });
 
-test("markdownCard 用 schema 1.0（兼容旧客户端渲染 markdown）", () => {
+test("markdownCard 用 schema 2.0（与命令卡片一致）", () => {
 	const card = markdownCard("**hi**") as Json;
-	assert.equal(card.schema, undefined, "1.0 卡片不声明 schema 字段");
-	assert.equal(
-		(card.config as Record<string, unknown>)?.wide_screen_mode,
-		true,
-		"1.0 用 config.wide_screen_mode",
-	);
-	const elements = card.elements as Array<{ tag: string; content: string }>;
-	assert.equal(elements[0]?.tag, "markdown", "markdown 元素在顶层 elements");
+	assert.equal(card.schema, "2.0");
+	const body = card.body as Json;
+	const elements = body.elements as Array<{ tag: string; content: string }>;
+	assert.equal(elements[0]?.tag, "markdown");
 	assert.equal(elements[0]?.content, "**hi**");
 });
 
