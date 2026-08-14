@@ -6,6 +6,7 @@
 
 - **修复：DSH Web GUI 中输入 `/lark setup` 被当普通消息交给模型**（实测根因）。ui-commands 的 `matchEnter` 只对定义了 `input` 的命令执行带参命令，否则非裸斜杠行回落到 agent。`lark` 命令现注册 `input: { hint }`；同时飞书侧 `/lark` 子命令补上分发（bridgeHandler 原缺 `lark` case）
 - **修复：`/lark setup` 的 registerApp 报 `Protocol "https:" not supported. Expected "http:"`**。SDK 的 `defaultHttpInstance` 用 axios，其 1.19.x 的 `exports.default.default → index.js`（lib 源码入口）在 Node ESM 下平台解析错位，把 https 请求赶进 `http.request`。改用 fetch 实现的同协议 registerApp（device-code 流程，RFC 8628：begin → QR → poll），二维码/addons 编码与 SDK 字节兼容
+- **修复：飞书发消息无响应——环境 proxy 变量导致 WS 连不上**。宿主 shell 带 `http_proxy/https_proxy` 时，SDK 共享 axios 实例按 env 走代理，axios 把 https URL 赶进 `http.request` 报协议错误，WS 端点发现与长连接全部失败。`buildLarkClient` 现对 SDK 自己的 `defaultHttpInstance` 设 `proxy:false`（保留其 response 解包拦截器；新建裸 axios 会破坏 `{code,data,msg}` 解析）。另修 status 面板 `wsReady` 从未写入状态存储的问题
 - **修复：桥 agent 无 provider/model → 每轮 turn 报错、飞书无回复**（实测根因）。桥创建的 DSH agent 直接调 `ctx.agents.create({sessionId})` 未携带默认模型；真实 harness 中 `agentDefaultModel` 服务由 headless/gateway 等入口层消费，不会自动注入到裸 create。现在 adapter 像 dsh-headless 一样：读取 `agentDefaultModel.currentSelection()` → 传 `agentOptions:{provider,model}` → `setup` 里 `installModelSelection`（request-waterfall 级联）。无该服务时告警提示
 - **修复：turn-supervisor watchdog 从未 arm**（`turn/start` 未映射 → `arm()` 死代码）。`SessionEventOut` 增加 `turn/start`，adapter 映射该事件，host 在 `onEvent` 里 arm
 - 新增测试：adapter 默认模型注入矩阵（有/无 agentDefaultModel → create 参数）、turn/start 事件映射、assistant 文本提取、fetch registerApp 全流程（begin→QR→poll→凭据）/中止（+7 项，共 121 项）
