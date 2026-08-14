@@ -63,9 +63,13 @@ const ctxOf = (
 	registry: ReturnType<typeof fakeRegistry>,
 	agentDefaultModel?: unknown,
 ) =>
-	({ agents: registry, agentDefaultModel }) as unknown as Parameters<
-		typeof createDshAdapter
-	>[0]["ctx"];
+	({
+		agents: registry,
+		// Cordis proxy surface — services are read via ctx.get(), not props.
+		get(name: string) {
+			return name === "agentDefaultModel" ? agentDefaultModel : undefined;
+		},
+	}) as unknown as Parameters<typeof createDshAdapter>[0]["ctx"];
 
 function mkBackend(ctx: unknown): DshSessionBackend {
 	return createDshAdapter({

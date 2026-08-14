@@ -33,6 +33,14 @@ export interface DshAdapterDeps {
 interface AgentRegistrySurface {
 	create(opts: {
 		sessionId: string;
+		meta?: {
+			cwd?: string;
+			parentSession?: string;
+			seedLength?: number;
+			origin?: "subagent";
+			delegationDepth?: number;
+			agentPreset?: string;
+		};
 		agentOptions?: {
 			provider: string;
 			model: string;
@@ -127,13 +135,19 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			// CreateAgentOptions and wire the request-waterfall selection.
 			// Without this every turn fails with "agent has no provider/model"
 			// and inbound messages never get a reply.
+			// NB: read via ctx.get() — the Cordis Context proxy throws
+			// "cannot get property ... without inject" for undeclared services.
 			const defaultModel = (
 				c as unknown as {
-					agentDefaultModel?: {
-						currentSelection(): ModelSelection | undefined;
-					};
+					get?(name: string):
+						| {
+								currentSelection(): ModelSelection | undefined;
+						  }
+						| undefined;
 				}
-			).agentDefaultModel?.currentSelection?.();
+			)
+				.get?.("agentDefaultModel")
+				?.currentSelection?.();
 			const agentOptions = defaultModel
 				? {
 						provider: defaultModel.provider,
@@ -147,6 +161,10 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			}
 			owned = await c.agents.create({
 				sessionId,
+				// cwd is REQUIRED: prompt sections like deployment:persona interpolate
+				// {{cwd}} — a session without it fails assembly with
+				// "prompt variable \"{{cwd}}\" has no value for this assembly".
+				meta: { cwd: process.cwd() },
 				...(agentOptions ? { agentOptions } : {}),
 				...(defaultModel
 					? {
