@@ -947,7 +947,14 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				}
 				configStore.update({ agentPreset: arg });
 				configStore.saveOverrides();
-				await conversations?.dispose(bridge.conversationKeyFor(msg));
+				// Agent presets snapshot at agent creation — an existing session's
+				// agent CANNOT change mode mid-flight. rotate() (NOT dispose): mints
+				// a fresh runNonce so the next message opens a brand-new session in
+				// this workspace under the new mode; the old row stays listed.
+				// dispose() would tear down the agent + remove its session from the
+				// store AND the next message would reuse the same sessionId (stale
+				// content / id collision).
+				await conversations?.rotate(bridge.conversationKeyFor(msg));
 				await sender.replyTo(
 					msg,
 					`模式已切换为 ${arg}（当前会话已重置，下条消息生效；其他会话不受影响）`,
