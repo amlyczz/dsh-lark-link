@@ -85,9 +85,10 @@ export const DEFAULT_CONFIG: FeishuConfig = {
 	},
 	reactions: {
 		enabled: true,
-		// 8 validated emoji types (pi-feishu-link F2 fix: only real, tested types).
-		pool: ["THUMBSUP", "OK", "HEART", "SMILE", "FIRE", "CLAP", "ROCKET", "SUN"],
-		done: "WHITE_CHECK_MARK",
+		// Only Feishu-valid emoji types (FIRE/ROCKET/SUN/WHITE_CHECK_MARK are
+		// invalid → addReaction 231001; Fire is valid, FIRE is not).
+		pool: ["THUMBSUP", "OK", "HEART", "LAUGH", "SMILE", "WOW", "CLAP", "Fire"],
+		done: "DONE",
 	},
 	outbox: {
 		maxAttempts: 50,

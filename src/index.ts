@@ -326,7 +326,37 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	const forwarder = createEventForwarder({
 		outbox,
 		routeFor: (key) => routeStore.get(key),
-		streamFor: () => undefined, // streaming cards wired once lark client is up
+		// Streaming cards stay off (省流量) unless hot-reloaded; the StreamTarget
+		// exists so turn/end can mark the trigger message DONE (pi design:
+		// 随机表情回执 + 完成打 DONE). markDone is best-effort via the sender.
+		streamFor: (sessionKey) => {
+			const route = routeStore.get(sessionKey);
+			if (!route) return undefined;
+			return {
+				route: {
+					sessionKey: route.sessionKey,
+					chatId: route.chatId,
+					chatType: route.chatType,
+					threadMessageId: route.threadMessageId,
+				},
+				ensureStream: () => undefined,
+				fallbackText: async (text) => {
+					await outbox.enqueue({
+						dedupeKey: `${sessionKey}:fallback:${Date.now()}`,
+						laneKey: sessionKey,
+						route: {
+							sessionKey: route.sessionKey,
+							chatId: route.chatId,
+							chatType: route.chatType,
+						},
+						kind: "assistant-output",
+						payload: { kind: "text", text },
+					});
+				},
+				markDone: () =>
+					bridge.markDone(sessionKey, route.lastMessageId),
+			};
+		},
 		cfg: () => ({ streamingEnabled: getCfg().streaming.enabled }),
 	});
 	const groupTrigger = createGroupTrigger({
@@ -345,26 +375,58 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 
 	// ---- command router --------------------------------------------------------
 	const dshCommands: DshCommandRegistry = {
-		has: (name) =>
-			(
-				ctx as unknown as { commands?: { has?(n: string): boolean } }
-			).commands?.has?.(name) ?? false,
+		// DSH's CommandRuntime has no `has()`; use find(agent, name) — the
+		// agent-scoped effective command registry (ScopedLayers).
+		has: (name, agentId) => {
+			try {
+				const services = ctx as unknown as {
+					commands?: { find?(agent: unknown, name: string): unknown };
+					agents?: { get?(id: string): unknown };
+				};
+				const agent = agentId ? services.agents?.get?.(agentId) : undefined;
+				if (!agent) return false;
+				return Boolean(services.commands?.find?.(agent, name));
+			} catch {
+				return false;
+			}
+		},
 		async run(name, rawInput, agentId) {
 			try {
-				const registry = (
-					ctx as unknown as {
-						commands?: {
-							run?(
-								n: string,
-								r: string,
-								a: string,
-							): Promise<{ kind: string; text?: string }>;
-						};
-					}
-				).commands;
-				if (!registry?.run)
+				const services = ctx as unknown as {
+					commands?: {
+						execute?(
+							agent: unknown,
+							line: string,
+							signal?: AbortSignal,
+						): Promise<
+							| {
+									result?: { kind: string; text?: string };
+							}
+							| undefined
+						>;
+					};
+					agents?: { get?(id: string): unknown };
+				};
+				const commands = services.commands;
+				const agent = services.agents?.get?.(agentId);
+				if (!commands?.execute || !agent)
 					return { kind: "error", text: "commands service unavailable" };
-				return await registry.run(name, rawInput, agentId);
+				const line = rawInput.trim()
+					? `/${name} ${rawInput.trim()}`
+					: `/${name}`;
+				// execute() needs a live signal; a never-aborted controller is fine
+				// for a one-shot command.
+				const out = await commands.execute(
+					agent,
+					line,
+					new AbortController().signal,
+				);
+				if (!out?.result)
+					return { kind: "error", text: `未知命令 /${name}` };
+				return {
+					kind: out.result.kind,
+					text: out.result.text,
+				};
 			} catch (err) {
 				return {
 					kind: "error",
@@ -391,9 +453,40 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				);
 				return true;
 			case "support":
-			case "doctor":
-				await sender.replyTo(msg, (await diagnostics.build()).text);
+			case "doctor": {
+				// pi design: the diagnostic bundle comes back as a FILE, not a wall
+				// of text — upload the generated report and send it (fall back to
+				// text when upload is unavailable).
+				const diag = await diagnostics.build();
+				const client = getLarkClient();
+				if (client?.uploadFile) {
+					try {
+						const fileName = `lark-link-doctor-${Date.now()}.md`;
+						const buf = Buffer.from(
+							`# dsh-lark-link 诊断包\n\n${diag.text}\n\n${diag.issueMd}\n`,
+							"utf8",
+						);
+						const uploadKey = extractUploadKey(
+							await client.uploadFile({
+								file_type: "file",
+								file_name: fileName,
+								file: buf,
+							}),
+							"file_key",
+						);
+						if (uploadKey) {
+							await sender.sendFile(msg.chatId, uploadKey, "file");
+							return true;
+						}
+					} catch (err) {
+						logger.warn(
+							`doctor file send failed: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					}
+				}
+				await sender.replyTo(msg, diag.text);
 				return true;
+			}
 			case "sessions": {
 				// List live bridge sessions (pi f752ece /sessions 决策).
 				const keys = bridge.conversations?.keys() ?? [];

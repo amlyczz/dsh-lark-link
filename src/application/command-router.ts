@@ -9,8 +9,8 @@ import type { FeishuInboundMessage } from "../common/types.ts";
 import type { BridgeContextRead } from "./bridge-context.ts";
 
 export interface DshCommandRegistry {
-  /** Look up a registered command handler by name (no leading slash). */
-  has(name: string): boolean;
+  /** Look up a registered command handler by name for the agent (no leading slash). */
+  has(name: string, agentId?: string): boolean;
   run(name: string, rawInput: string, agentId: string): Promise<{ kind: string; text?: string }>;
 }
 
@@ -51,9 +51,9 @@ export function createCommandRouter(deps: CommandRouterDeps): CommandRouter {
       }
 
       // Tier 2: DSH-registered commands (native handler, no model round-trip)
-      if (deps.commands.has(cmdName)) {
-        const agent = deps.ctx.backend?.get(deps.ctx.conversationKeyFor(msg));
-        const agentId = agent?.agentId ?? "";
+      const agent = deps.ctx.backend?.get(deps.ctx.conversationKeyFor(msg));
+      const agentId = agent?.agentId ?? "";
+      if (agentId && deps.commands.has(cmdName, agentId)) {
         try {
           const result = await deps.commands.run(cmdName, rawInput, agentId);
           const key = deps.ctx.conversationKeyFor(msg);

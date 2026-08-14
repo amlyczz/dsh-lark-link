@@ -147,8 +147,9 @@ export function createBridgeContext(deps: BridgeContextDeps): BridgeContext {
     },
     async markDone(key, triggerMessageId) {
       if (!triggerMessageId || !deps.sender) return;
+      const doneEmoji = deps.cfg().reactions.done || "DONE";
       try {
-        await deps.sender.addReaction(triggerMessageId, "WHITE_CHECK_MARK");
+        await deps.sender.addReaction(triggerMessageId, doneEmoji);
       } catch {
         deps.logger.warn(`markDone reaction failed for ${key}`);
       }

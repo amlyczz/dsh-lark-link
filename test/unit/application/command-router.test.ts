@@ -25,6 +25,10 @@ function makeRouter(overrides: { dshHas?: string[]; bridgeHandler?: (name: strin
     logger: createLogger("test"),
     cfg: () => DEFAULT_CONFIG,
     status: createStatusStore(undefined),
+    // Tier 2 needs a resolvable agent (agentId) — mock the backend lookup.
+    backend: {
+      get: () => ({ agentId: "agent-1" }),
+    } as never,
   });
   const dshCommands: DshCommandRegistry = {
     has: (name) => (overrides.dshHas ?? ["model"]).includes(name),

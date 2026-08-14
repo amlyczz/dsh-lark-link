@@ -80,6 +80,8 @@ export function createMessageHandler(deps: MessageHandlerDeps): MessageHandler {
 				sessionKey,
 				chatId: msg.chatId,
 				chatType: msg.chatType,
+				// Remember the trigger message so turn-end can DONE-reaction it.
+				lastMessageId: msg.messageId,
 				updatedAt: Date.now(),
 			});
 			try {
