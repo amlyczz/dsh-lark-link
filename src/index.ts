@@ -47,6 +47,8 @@ import { createDedupeStore } from "./common/dedupe-store.ts";
 import { createQuotaGovernor } from "./common/quota-governor.ts";
 import {
 	helpCard,
+	markdownCard,
+	looksLikeMarkdown,
 	modeCard,
 	modelCard,
 	permissionCard,
@@ -286,12 +288,22 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		async sendText(chatId, text) {
 			const client = getLarkClient();
 			if (!client?.sendMessage) throw new Error("lark client not ready");
-			// Plain text ALWAYS — no CardKit schema-2.0 fallback. Older Feishu
-			// clients can't render schema-2.0 cards and show a
-			// "请升级至最新版本客户端" placeholder instead of the reply, which
-			// reads as "the bot never answered". Markdown source in a text
-			// message is universally visible; formatting is lost but the reply
-			// is not.
+			// Markdown-ish replies render as schema-1.0 cards (Feishu renders the
+			// markdown element in every client — old and new). Schema 2.0 cards
+			// break older clients ("请升级至最新版本客户端" placeholder), and plain
+			// text shows raw markdown source. 1.0 is the compatible middle
+			// ground; oversize replies fall back to plain text.
+			if (looksLikeMarkdown(text) && text.length <= 28_000) {
+				await client.sendMessage({
+					receive_id_type: chatId.startsWith("oc_") ? "chat_id" : "open_id",
+					params: {
+						receive_id: chatId,
+						msg_type: "interactive",
+						content: JSON.stringify(markdownCard(text)),
+					},
+				});
+				return;
+			}
 			await client.sendMessage({
 				receive_id_type: chatId.startsWith("oc_") ? "chat_id" : "open_id",
 				params: {

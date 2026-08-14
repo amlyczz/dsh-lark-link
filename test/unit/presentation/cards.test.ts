@@ -29,17 +29,29 @@ function collectButtons(node: unknown, acc: Array<Json> = []): Array<Json> {
   return acc;
 }
 
-test("所有卡片声明 schema 2.0", () => {
+test("命令卡片声明 schema 2.0（按钮需 behaviors 回调）", () => {
   for (const card of [
     welcomeCard("测试"),
     commandPanelCard(),
     statusCard("connected", []),
-    markdownCard("hi"),
     setupCard("https://x", 300),
     errorCard("oops"),
   ]) {
     assert.equal((card as Json).schema, "2.0");
   }
+});
+
+test("markdownCard 用 schema 1.0（兼容旧客户端渲染 markdown）", () => {
+  const card = markdownCard("**hi**") as Json;
+  assert.equal(card.schema, undefined, "1.0 卡片不声明 schema 字段");
+  assert.equal(
+    (card.config as Record<string, unknown>)?.wide_screen_mode,
+    true,
+    "1.0 用 config.wide_screen_mode",
+  );
+  const elements = card.elements as Array<{ tag: string; content: string }>;
+  assert.equal(elements[0]?.tag, "markdown", "markdown 元素在顶层 elements");
+  assert.equal(elements[0]?.content, "**hi**");
 });
 
 test("卡片不含 tag:action 容器（schema 2.0 已移除该能力，200861）", () => {

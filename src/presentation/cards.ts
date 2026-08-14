@@ -51,10 +51,13 @@ export function markdownCard(
   markdown: string,
   opts: { header?: string; accent?: boolean } = {},
 ): unknown {
+  // schema 1.0 (legacy card protocol, NO "schema" field): supported by every
+  // Feishu client incl. old ones. schema 2.0 cards render as
+  // "请升级至最新版本客户端，以查看内容" on older clients (verified), so markdown
+  // replies and headed cards must use 1.0 to be readable everywhere.
+  // 1.0 header is { title: { tag, content }, template } at top level.
   return {
-    schema: "2.0",
-    // schema 2.0: `header` is a TOP-LEVEL sibling of `body` — nesting it
-    // inside body fails with ErrCode 200621 "unknown property header".
+    config: { wide_screen_mode: true },
     ...(opts.header
       ? {
           header: {
@@ -63,7 +66,7 @@ export function markdownCard(
           },
         }
       : {}),
-    body: { elements: [{ tag: "markdown", content: markdown }] },
+    elements: [{ tag: "markdown", content: markdown }],
   };
 }
 
