@@ -71,7 +71,15 @@ import * as qrcode from "qrcode-terminal";
 import QRCode from "qrcode";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { mkdirSync, readFileSync, statSync, rmSync } from "node:fs";
+import {
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	statSync,
+	rmSync,
+	existsSync,
+} from "node:fs";
+import { zstdDecompressSync } from "node:zlib";
 import type { FeishuInboundMessage } from "./common/types.ts";
 
 export const name = "dsh-lark-link";
@@ -684,9 +692,9 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				const client = getLarkClient();
 				if (client?.uploadFile) {
 					try {
-						const sessionId = bridge.backend?.get(
-							bridge.conversationKeyFor(msg),
-						)?.sessionId;
+						const key = bridge.conversationKeyFor(msg);
+						const sessionId =
+							bridge.backend?.get(key)?.sessionId ?? findLatestLarkSessionId();
 						const zipBuf = sessionId
 							? await buildSessionExportZip(sessionId, diag.text, diag.issueMd)
 							: undefined;
@@ -1431,6 +1439,41 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	 * at <DSH_HOME>/sessions/<workspace-dir>/<encoded-session-id>/session.jsonl.zstd
 	 * where ":" encodes as "~003A" — scan every workspace dir for the match.
 	 */
+	/** Scan ~/.dsh/sessions for the most recently written lark-link session id. */
+	const findLatestLarkSessionId = (): string | undefined => {
+		const sessionsRoot = join(
+			process.env.DSH_HOME ?? join(homedir(), ".dsh"),
+			"sessions",
+		);
+		if (!existsSync(sessionsRoot)) return undefined;
+		let latest: { id: string; mtime: number } | undefined;
+		for (const wsDir of readdirSync(sessionsRoot)) {
+			const wsPath = join(sessionsRoot, wsDir);
+			let entries: string[] = [];
+			try {
+				entries = readdirSync(wsPath);
+			} catch {
+				continue;
+			}
+			for (const name of entries) {
+				if (!name.includes("lark-link")) continue;
+				const sessionDir = join(wsPath, name);
+				const zstd = join(sessionDir, "session.jsonl.zstd");
+				if (!existsSync(zstd)) continue;
+				let mtime = 0;
+				try {
+					mtime = statSync(zstd).mtimeMs;
+				} catch {
+					continue;
+				}
+				if (!latest || mtime > latest.mtime) {
+					latest = { id: name.replace(/~003A/g, ":"), mtime };
+				}
+			}
+		}
+		return latest?.id;
+	};
+
 	const buildSessionExportZip = async (
 		sessionId: string,
 		diagText: string,
@@ -1462,46 +1505,98 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						}>;
 				  }
 				| undefined;
-			if (!persistence?.readRaw) return undefined;
-
-			// Same shape as the webui "Session log" download:
-			//   session.jsonl (root, decompressed) + subagents/<id>/<name> +
-			//   media/<id>.<ext> — every entry byte-identical to the durable
-			//   artifact store, exactly like /api/session.export.
 			const files: Array<{ name: string; data: Uint8Array }> = [];
-			const root = await persistence.readRaw(sessionId);
-			if (root === undefined) return undefined;
-			files.push({
-				name: root.filename,
-				data: Buffer.from(root.content, "utf8"),
-			});
 
-			// Descendant (subagent) logs.
-			const seen = new Set<string>([sessionId]);
-			const collect = async (
-				nodes: Array<{
-					session: { header: { id: string } };
-					descendants: unknown[];
-				}>,
-			): Promise<void> => {
-				for (const node of nodes) {
-					const id = node.session.header.id;
-					if (seen.has(id)) continue;
-					seen.add(id);
-					const raw = await persistence.readRaw?.(id);
-					if (raw !== undefined) {
-						const safe = id.replace(/[^A-Za-z0-9_-]/g, "_");
-						files.push({
-							name: `subagents/${safe}/${raw.filename}`,
-							data: Buffer.from(raw.content, "utf8"),
-						});
-					}
-					await collect((node.descendants ?? []) as typeof nodes);
+			// Primary: same shape as the webui "Session log" download via the
+			// sessionPersistence service.
+			let root: { filename: string; content: string } | undefined;
+			if (persistence?.readRaw) {
+				try {
+					root = await persistence.readRaw(sessionId);
+				} catch (err) {
+					logger.warn(
+						`doctor: sessionPersistence.readRaw failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
 				}
-			};
-			if (query?.traceSession) {
-				const lineage = await query.traceSession(sessionId);
-				await collect(lineage.descendants as never);
+			} else {
+				logger.warn(
+					"doctor: sessionPersistence service unavailable — falling back to file scan",
+				);
+			}
+			if (root) {
+				files.push({
+					name: root.filename,
+					data: Buffer.from(root.content, "utf8"),
+				});
+				// Descendant (subagent) logs.
+				const seen = new Set<string>([sessionId]);
+				const collect = async (
+					nodes: Array<{
+						session: { header: { id: string } };
+						descendants: unknown[];
+					}>,
+				): Promise<void> => {
+					for (const node of nodes) {
+						const id = node.session.header.id;
+						if (seen.has(id)) continue;
+						seen.add(id);
+						const raw = await persistence?.readRaw?.(id);
+						if (raw !== undefined) {
+							const safe = id.replace(/[^A-Za-z0-9_-]/g, "_");
+							files.push({
+								name: `subagents/${safe}/${raw.filename}`,
+								data: Buffer.from(raw.content, "utf8"),
+							});
+						}
+						await collect((node.descendants ?? []) as typeof nodes);
+					}
+				};
+				if (query?.traceSession) {
+					try {
+						const lineage = await query.traceSession(sessionId);
+						await collect(lineage.descendants as never);
+					} catch (err) {
+						logger.warn(
+							`doctor: traceSession failed (subagents skipped): ${err instanceof Error ? err.message : String(err)}`,
+						);
+					}
+				}
+			}
+
+			// Fallback: locate the session log on disk directly (node:zlib
+			// decompresses zstd; no system unzstd needed).
+			if (files.length === 0) {
+				const sessionsRoot = join(
+					process.env.DSH_HOME ?? join(homedir(), ".dsh"),
+					"sessions",
+				);
+				const encoded = sessionId.replace(/:/g, "~003A");
+				let zstdPath: string | undefined;
+				if (existsSync(sessionsRoot)) {
+					for (const wsDir of readdirSync(sessionsRoot)) {
+						const candidate = join(
+							sessionsRoot,
+							wsDir,
+							encoded,
+							"session.jsonl.zstd",
+						);
+						if (existsSync(candidate)) {
+							zstdPath = candidate;
+							break;
+						}
+					}
+				}
+				if (!zstdPath) {
+					logger.warn(
+						`doctor: no session log found for ${sessionId} (service + file scan)`,
+					);
+					return undefined;
+				}
+				const jsonl = zstdDecompressSync(readFileSync(zstdPath)).toString(
+					"utf8",
+				);
+				logger.info(`doctor: file-scan fallback used: ${zstdPath}`);
+				files.push({ name: "session.jsonl", data: Buffer.from(jsonl, "utf8") });
 			}
 
 			// ISSUE.md + README (diagnostic bundle extras).
@@ -1536,8 +1631,15 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			for (const f of files) {
 				entries[f.name] = strToU8(new TextDecoder().decode(f.data));
 			}
-			return Buffer.from(zipSync(entries, { level: 6 }));
-		} catch {
+			const buf = Buffer.from(zipSync(entries, { level: 6 }));
+			logger.info(
+				`doctor: zip built (${files.length} files, ${buf.length} bytes)`,
+			);
+			return buf;
+		} catch (err) {
+			logger.warn(
+				`doctor: zip build failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
 			return undefined;
 		}
 	};
