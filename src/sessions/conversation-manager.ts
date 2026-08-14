@@ -110,9 +110,15 @@ export function createConversationManager(
 			// /new must NOT dispose the old agent: AgentHandle.dispose() stops the
 			// loop AND removes the session from the store (dsh-agent docs), which
 			// makes the previous conversation vanish from the GUI session list
-			// even though its log survives on disk. Just bump the generation so
-			// the next message opens a NEW session row; the old agent idles out
-			// via the TTL sweep and its session stays listed.
+			// even though its log survives on disk. Bump the generation so the
+			// next message opens a NEW session row; the old agent idles out via
+			// the TTL sweep and its session stays listed.
+			// BUT the old fan-out listener must be dropped too: handleMessage
+			// attaches exactly one listener per key (hooks.has guard), so a stale
+			// hook would swallow the NEW agent's events — no reply after /new.
+			hooks.get(key)?.();
+			hooks.delete(key);
+			queues.delete(key);
 			deps.backend.rotate(key);
 		},
 		sweep() {
