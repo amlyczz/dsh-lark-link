@@ -1,139 +1,172 @@
-# dsh-lark-link
+<p align="center">
+  <img src="assets/mascot.png" alt="dsh-lark-link mascot" width="420"/>
+</p>
+
+<h1 align="center">🪶 dsh-lark-link</h1>
 
 <p align="center">
-  <img src="assets/preview.svg" alt="dsh-lark-link banner" width="100%"/>
+  <b>DeepSeek Harness × 飞书/Lark 双向桥接</b> — 把你的 DSH 智能体装进飞书，扫码 30 秒上线，随时随地对话
+</p>
+
+<p align="center">
+  <a href="#中文"><img src="https://img.shields.io/badge/中文-README-blue" alt="中文"/></a>
+  <a href="#english"><img src="https://img.shields.io/badge/English-README-green" alt="English"/></a>
+  <img src="https://img.shields.io/badge/status-beta-orange" alt="beta"/>
+  <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT"/>
 </p>
 
 ---
 
-> 全网统一昵称：**小斯syzs**
->
-> B站 [@小斯syzs](https://space.bilibili.com/390211071) · 抖音 · 小红书 · 快手（全网同名，搜 **小斯syzs**）
->
+# 中文
 
+> 全网统一昵称：**小斯syzs** · B站 [@小斯syzs](https://space.bilibili.com/390211071) · 抖音 · 小红书 · 快手（全网同名）
 
----
-**DeepSeek Harness × 飞书/Lark 双向桥接插件** — 高可靠飞书桥：扫码 30 秒上线 · 消息零丢失 · CardKit 流式 · 每飞书会话独立 DSH agent · 复用 DSH Web GUI
+**DeepSeek Harness × 飞书/Lark 双向桥接插件** —— 把你的 DSH 智能体（DeepSeek Harness）装进飞书：扫码 30 秒上线、消息零丢失、卡片化交互、每飞书会话独立 Agent。
 
-## 特性
+## ✨ 特性
 
 | 能力 | 说明 |
 | ---- | ---- |
-| 🎯 一键认证 | `/lark setup` 扫码创建飞书应用（自动订阅消息事件 + 群聊全量 + 表情权限），30 秒上线 |
-| ✍️ CardKit 流式 | schema 2.0 真流式卡片（逐字打印），关闭时先关流再定稿全量 |
-| 💪 消息零丢失 | 持久 Outbox（JSONL + at-least-once + 幂等键 + 分航道 + 失败离队不阻塞），kill 重启续投 |
-| 🛡 连接自愈 | probe 驱动受控重连 + QuotaGovernor 配额熔断 + 断连补偿 |
-| 🔀 每会话独立 agent | 每飞书会话一个 DSH session（私聊/群隔离、并行不串线、idle 回收、映射持久化） |
-| 🖥 复用 DSH Web GUI | 桥 agent = 原生 DSH session，聊天/流式/工具卡/设置全由 GUI 呈现；client 只加状态浮层 |
-| 🔘 一键按钮卡片 | 欢迎卡/命令面板/状态卡带 schema 2.0 平铺按钮（behaviors callback 回传，无 tag:action——对齐飞书 200861 修复） |
-| 🔀 原生命令转发 | 三级分流：桥特有命令桥处理；DSH 已注册命令原生调 handler；`/goal`、未知 `/xxx`、普通消息原样注入 agent（无拦截无门禁）；skill 无前缀——直接描述任务，模型自动加载 |
-| 🔓 无审批全放开 | 用户决策：所有工具调用默认直接放行，无审批卡、无询问 |
-| 📎 出站多媒体 | 模型经 `lark_send_local_file` 工具主动回传本地图片/文件到当前飞书会话（路径白名单 + 大小校验） |
-| 🩺 一键诊断 | 飞书 `/doctor`（`/support` 旧名兼容）→ 脱敏诊断包回发 |
+| 🎯 **一键认证** | `/lark setup` 扫码创建飞书应用（自动订阅消息事件 + 群聊全量 + 表情权限），**30 秒上线**，无需手搓开放平台 |
+| 🧠 **多模式 Agent** | PTC / 标准 / 极简 / 创造四种 preset，飞书发 `/mode` 出**单选卡片**即切（默认 PTC：标准工具 + Code Mode 一次执行，更快更省） |
+| 🎛 **权限分级** | 只读 / 工作区写 / **Full access** 三种权限，`/permission` 卡片即切；默认 Full access 全放行 |
+| 🎨 **卡片化命令** | `/mode` `/permission` `/model` 全部是**单选按钮卡片**——点一下即切换，不用记命令拼写；模型选择按供应商分组展示 |
+| 💬 **意图确认转发** | 模型提问（`ask_user_question`）→ **飞书意图确认卡片**（选项按钮 + 自定义输入），答完模型继续，飞书里完成完整交互闭环 |
+| 😊 **表情回执** | 收到消息随机表情"已收到"；回复完成 / 命令完成打 **DONE ✅**（只使用飞书实测有效 emoji） |
+| 💪 **消息零丢失** | 持久 Outbox（JSONL + at-least-once + 幂等键 + 分航道并行 + 失败离队不阻塞），kill 重启自动续投 |
+| 🛡 **连接自愈** | probe 驱动受控重连 + QuotaGovernor 配额熔断 + 断连补偿；环境代理自动规避 |
+| 🔀 **命令三级分流** | 桥特有命令桥处理；DSH 注册命令原生执行；`/goal`、未知 `/xxx`、普通消息原样注入 Agent（无拦截无门禁）；**skill 无前缀**——直接描述任务，模型自动加载 |
+| 📎 **入站多媒体** | 飞书图片 → **视觉模型看图**（attachment 存储）；文件 → 有界文本提取进提示词 |
+| 📤 **出站多媒体** | 模型经 `lark_send_local_file` 主动回传本地图片/文件（工作区白名单 + 大小校验 + 格式自动降级） |
+| 🩺 **一键诊断** | `/doctor` → **ZIP 诊断包**（含当前会话完整 DSH session log + 脱敏配置 + ISSUE.md），发回飞书，贴给 AI 即可定位 |
+| ✍️ **Markdown 渲染** | 回复自动检测 markdown → **CardKit 卡片**渲染（标题/列表/代码块/表格），纯文本走文本消息 |
+| 🆕 **会话管理** | `/new` 当前工作区新起会话（不进 Agent）；`/workspace <路径>` 切换工作区（`~` 展开）；重启后会话 id 持久化，**不丢会话行** |
+| 🖥 **复用 DSH Web GUI** | 桥 Agent = 原生 DSH session，聊天/流式/工具卡/设置全由 GUI 呈现；会话自动归入对应工作区（不再"未分组"） |
+| 🔓 **默认 Full access** | 沙箱全访问 + 审批 never，零打扰 |
 
-## 快速开始
+## 🚀 快速开始
 
-**标准方式（官方 `dsh plugin` 机制，无侵入）**——包以官方 bundle 格式分发：`package.json` 声明 `dsh.bundle`，安装后 `dsh` 自动把它并入 profile 的 `dsh.profile.bundles` 层，不改任何全局配置、不写 profile 之外的文件：
+**标准方式（官方 `dsh plugin` 机制，无侵入）**：
 
 ```bash
-# npm 发布后（推荐，装的是预构建产物，无需任何构建许可）：
+# npm 发布后（推荐，装预构建产物，无需构建许可）：
 dsh plugin add dsh-lark-link --ignore-scripts
 
-# 或直接装 tarball：
-dsh plugin add ./dsh-lark-link-0.1.0.tgz --ignore-scripts
-
-# 或从 GitHub（源码安装，需 prepare 构建 + allowBuilds 许可，见官方 publish.md）：
-dsh plugin add github:<owner>/dsh-lark-link
+# 或本地 tarball：
+dsh plugin add ./dsh-lark-link-0.1.1.tgz --ignore-scripts
 ```
 
-> `--ignore-scripts`：飞书官方 SDK（@larksuiteoapi/node-sdk）的传递依赖 protobufjs 带一个可忽略的 postinstall（仅生成 banner），pnpm 11 安全策略会拦截它并返回非零退出码。加此参数即跳过（protobufjs 不执行 postinstall 完全可用）。在真实用户机上 pnpm 可能已全局放行，则可不加。
+> `--ignore-scripts`：飞书 SDK 的传递依赖 protobufjs 带一个可忽略的 postinstall，pnpm 11 安全策略会拦截；加此参数跳过（完全可用）。
 
 ```bash
-dsh --profile web     # 启动 DSH Web GUI（插件随宿主生命周期加载）
-/lark setup           # 终端或 GUI 面板扫码 → 凭据写入 ctx.credentials
-/lark start           # 启动桥接
+dsh web                      # 启动 DSH Web GUI
+/lark setup                  # 扫码创建飞书应用（30 秒）
+/lark start                  # 启动桥接
 ```
 
-卸载同样干净（官方机制）：`dsh plugin remove dsh-lark-link` 同时移除依赖与 bundle 层。
+然后**飞书搜索你的机器人，发任意消息**——收到表情回执 + 完整回复即端到端连通。群聊**免 @**，直接说话即可。
 
-然后在飞书搜索你的机器人发消息——收到回复即端到端连通。
+## ⌨️ 命令
 
-### 开发者
-
-```bash
-npm run dev:link   # 链接本地 DSH checkout（类型检查/测试需要；DSH_REPO=/path 指定位置）
-npm run check      # tsc --noEmit
-npm test           # 93 项单元 + 集成测试
-npm run build      # tsdown → dist/（宿主 ESM + client ModuleLoader 包）
-npm pack           # 产出可分发 tarball
-```
-
-## 命令
-
-### DSH 侧（CLI / GUI composer）
+### DSH 侧（GUI 或终端）
 
 ```
-/lark setup            扫码建应用（终端出二维码；addons 自动订阅消息事件 + 群聊全量 + 表情权限）
-                       手动通道：设 DSH_LARK_APP_ID + DSH_LARK_APP_SECRET（可选 DSH_LARK_DOMAIN=lark）后再跑
-/lark start            启动桥接（未配置凭据会提示先 /lark setup，不会崩溃）
-/lark stop             停止（不断凭据/配置）
-/lark restart          重启
-/lark status           全链路健康视图
-/lark uninstall-clean  清除凭据 + 清空状态目录（不可逆；配置/凭据一并清除）
+/lark setup            扫码一键建应用（或 DSH_LARK_APP_ID/SECRET 手动通道）
+/lark start|stop|restart|status   桥接生命周期与全链路健康
+/lark uninstall-clean  清除凭据与状态目录
 ```
 
-> 凭据只进 `ctx.credentials`（ref `LARK_LINK_APP`，存为 JSON blob `{appId,appSecret,domain}`）；`config.json` 只存 ref，不含密钥。
-
-### 飞书侧（三级分流）
-
-**无拦截、无门禁**——每一条 `/` 消息要么被桥处理/适配，要么原样交给 DSH，绝不静默丢弃：
+### 飞书侧（卡片化单选，无需记忆拼写）
 
 | 类别 | 命令 | 行为 |
 | ---- | ---- | ---- |
-| 桥特有 | `/status` `/workspace` `/stop` `/doctor`（`/support` 兼容）`/sessions` `/lark-config` `/help` | 桥处理（状态/工作区/中断/诊断/会话列表/热改） |
-| DSH 注册命令 | `/lark-*` 及其他已注册命令 | **原生调 handler**，结果回飞书（不经模型） |
-| 原样注入 | `/goal`、模板、未知 `/xxx`、普通消息 | **原样注入**对应 DSH agent，输出经事件流逐条回飞书 |
+| 选择类 | `/mode` `/permission` `/model` | **单选按钮卡片**，点选即切换 |
+| 状态类 | `/status` `/sessions` `/help` | 全链路健康 / 会话列表 / 帮助卡片 |
+| 会话类 | `/new` `/stop` `/workspace <路径>` | 新会话 / 停当前任务 / 切工作区 |
+| 诊断 | `/doctor` | ZIP 诊断包（session log + 配置 + ISSUE.md） |
+| 热改 | `/lark-config key=value` | 热改配置（如 `groupPolicy=open`、`agentPreset=code`） |
+| DSH 命令 | `/goal` `/compact` 等 | 原生执行，结果回飞书 |
+| 多媒体 | 发图片/文件 | 图片→视觉模型；文件→文本提取 |
+| 意图确认 | 模型提问 | 自动转**飞书意图确认卡片**，选项或输入作答 |
 
-> 命令没有前缀白名单：插件命令（如 `/goal`）、模板、任何未知 `/xxx` 都原样透传——由 DSH 侧按其原生语义执行，输出流式回投本会话。skill 无前缀：DSH 的 skill 是模型工具（`skill` tool），直接描述任务即可，模型会自动加载对应 skill。
+> 命令无拦截、无门禁：一切 `/` 消息要么桥处理，要么原样交 DSH——绝不停默丢弃。skill 无前缀，直接说任务即可。
 
-### 多媒体
-
-- **出站**：模型在对话中可直接调用 `lark_send_local_file` 工具，把本地图片/文件上传并发到当前飞书会话（路径限制在工作区内）。
-- **入站**：图片/文件消息当前以文本占位形式进入会话（M6 待实现：图片→视觉模型、文件→有界文本提取）。
-
-## 状态目录
-
-`<DSH_HOME>/lark-link/`（`DSH_LARK_LINK_HOME` 可覆盖）：
-
-```
-config.json / runtime-overrides.json   桥配置 + 热改（凭据不在其中）
-routes.json                            会话路由（30d）
-dedupe.jsonl                           入站去重
-conn-history.jsonl                     配额熔断历史
-outbox/seg-*.jsonl + blobs/            持久出站队列
-status.json                            连接状态
-```
-
-## 开发
+## 🛠 开发者
 
 ```bash
-npm run check   # tsc --noEmit
-npm test        # 90 项单元 + 集成测试（node:test，零额外 dev 依赖）
+npm run dev:link   # 链接本地 DSH checkout（类型检查/测试需要）
+npm run check      # tsc --noEmit
+npm test           # 122 项单元 + 集成测试
+npm run build      # tsdown → dist/（宿主 ESM + client bundle）
+npm pack           # 产出可分发 tarball
 ```
 
-测试覆盖：normalizeInbound v2.0 结构矩阵、supervisor 静默/熔断、quota 跨重启、
-outbox 崩溃恢复/分航道/幂等/blob spill、CardKit 关流序列、命令三级分流、
-权限全放开矩阵、端到端桥回路（飞书消息→agent→持久投递）、插件装配冒烟。
+**架构**：桥 = Cordis 插件（`dsh.bundle` 格式），分层清晰：
+`host`（SDK 适配/认证）→ `inbound`（传输/群触发/断连补偿）→ `application`（命令路由/消息编排/诊断）→ `outbound`（Outbox/事件转发/卡片）→ `sessions`（每会话 Agent 管理）。
 
-## 致谢
+## 📄 许可
 
-架构与关键机制深度借鉴 [pi-feishu-link](https://github.com/amlyczz/pi-feishu-link)
-（Outbox/受控重连/熔断/断连补偿/表情回执/三级分流/诊断）与三参考项目
-[pi-lark-notify](https://github.com/Naoki326/pi-lark-notify)、
-[pi-feishu-lark](https://github.com/yangtuooc/pi-feishu-lark)、
-[pi-remote-feishu](https://github.com/grin-coder/pi-remote-feishu)
-（CardKit 流式 / per-key 队列 / 会话映射 / 权限桥思想）。
+MIT — 自由使用、修改、分发。
 
-## License
+---
 
-MIT
+# English
+
+<p align="center">
+  <img src="assets/mascot.png" alt="dsh-lark-link mascot" width="420"/>
+</p>
+
+**DeepSeek Harness × Feishu/Lark bridge** — put your DSH agent inside Feishu. Scan a QR code and go live in 30 seconds; chat from anywhere.
+
+## ✨ Features
+
+| Capability | Description |
+| ---- | ---- |
+| 🎯 **One-click auth** | `/lark setup` scans a QR to create the Feishu app (auto-subscribes message events + group-all + reactions). 30-second onboarding, no Open Platform fiddling |
+| 🧠 **Multi-mode Agent** | PTC / Standard / Minimal / Creator presets; `/mode` shows a **single-select card** — tap to switch (default PTC: standard tools + Code Mode, one-shot multi-step execution) |
+| 🎛 **Permission tiers** | Read-only / workspace-write / **Full access**; `/permission` card switches instantly (Full access by default) |
+| 🎨 **Card-based commands** | `/mode` `/permission` `/model` are all **single-select button cards** — tap, no typing; models grouped by provider |
+| 💬 **Intent confirmation** | Model questions (`ask_user_question`) land as **Feishu intent-confirmation cards** (option buttons + custom text); answer and the agent resumes |
+| 😊 **Reaction receipts** | Random "got it" reaction on inbound; **DONE ✅** on completion (only Feishu-validated emojis) |
+| 💪 **Zero message loss** | Persistent Outbox (JSONL + at-least-once + idempotency + per-lane parallel + failure quarantine), resumes after kill/restart |
+| 🛡 **Self-healing connection** | Probe-driven controlled reconnect + QuotaGovernor circuit breaker + missed-message compensation; auto-avoids proxy env |
+| 🔀 **3-tier command routing** | Bridge commands → bridge; DSH commands → native; `/goal`, unknown `/xxx`, plain text → injected verbatim (no gates). **Skills need no prefix** — just describe the task |
+| 📎 **Inbound media** | Feishu images → **visual model** (attachment-backed); files → bounded text extraction |
+| 📤 **Outbound media** | Model sends local files/images via `lark_send_local_file` (workspace whitelist + size/format checks) |
+| 🩺 **One-click diagnostics** | `/doctor` → **ZIP bundle** (full DSH session log + sanitized config + ISSUE.md) back to the chat |
+| ✍️ **Markdown rendering** | Replies auto-render as CardKit cards (headings/lists/code/tables); plain text stays plain |
+| 🆕 **Session management** | `/new` opens a fresh session in the current workspace; `/workspace <path>` switches (with `~`); session ids persist across restarts |
+| 🖥 **Reuses DSH Web GUI** | Bridge agents are native DSH sessions; conversations auto-group under their workspace |
+| 🔓 **Full access by default** | Sandbox full access + never-ask approvals |
+
+## 🚀 Quickstart
+
+```bash
+dsh plugin add dsh-lark-link --ignore-scripts
+dsh web
+/lark setup          # scan QR (30s)
+/lark start
+```
+
+Open Feishu, find your bot, send anything — reaction receipt + full reply = end-to-end. **Group chats need no @-mention.**
+
+## ⌨️ Commands (Feishu side)
+
+- **Selectors** (single-select cards): `/mode` `/permission` `/model`
+- **Status**: `/status` `/sessions` `/help`
+- **Sessions**: `/new` `/stop` `/workspace <path>`
+- **Diagnostics**: `/doctor` (ZIP with session log)
+- **Hot reload**: `/lark-config key=value`
+- **DSH commands** run natively: `/goal` `/compact` …
+- **Media**: send images/files to the bot
+- **Intent confirmations** auto-arrive as cards
+
+## 🛠 Development
+
+```bash
+npm run dev:link && npm run check && npm test && npm run build
+```
+
+## 📄 License
+
+MIT — free to use, modify, and distribute.
