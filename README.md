@@ -52,7 +52,8 @@
 # 1. 安装插件（npm 官方包，装预构建产物，无需构建许可）：
 dsh plugin --profile web add dsh-lark-link --ignore-scripts
 
-#   或本地 tarball：
+#   或本地 tarball（先用 npm pack 生成，离线/内网友好）：
+#   npm pack
 #   dsh plugin --profile web add ./dsh-lark-link-0.2.0.tgz --ignore-scripts
 #   或 GitHub 源码（需 prepare 构建 + allowBuilds 许可）：
 #   dsh plugin --profile web add github:amlyczz/dsh-lark-link
