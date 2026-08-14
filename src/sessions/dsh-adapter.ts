@@ -379,7 +379,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				// is left in place (orphaned, harmless); the GUI gets a new
 				// conversation row, and the message gets a reply.
 				deps.logger?.warn(
-					`session id taken for ${key} — minting fresh session (resume is broken for mismatched logs)`, 
+					`session id taken for ${key} — minting fresh session (resume is broken for mismatched logs)`,
 				);
 				runNonce = `${Date.now().toString(36)}${Math.random()
 					.toString(36)
@@ -553,13 +553,22 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		},
 		size: () => tracked.size,
 		rotate(key) {
-			generations.set(key, (generations.get(key) ?? 0) + 1);
-			// /new: the OLD agent must no longer be reused (next message opens a
-			// fresh session row), but it must NOT be torn down via
-			// handle.dispose() — that removes its session from the store and the
-			// previous conversation vanishes from the GUI list. Lightweight
-			// detach: drop listeners + tracking so the old session id stays
-			// listed; the agent idles out via the TTL sweep.
+			// /new must mint a WHOLLY fresh session id, not just bump the
+			// generation: a `:<gen+1>` id can collide with a persisted log from
+			// an earlier run (same runNonce family), and DSH then fails the first
+			// turn with "already persisted at a different cwd (id collision)" —
+			// no reply after /new. Fresh runNonce + generation 0 gives a
+			// collision-free id every time.
+			runNonce = `${Date.now().toString(36)}${Math.random()
+				.toString(36)
+				.slice(2, 6)}`;
+			generations.delete(key);
+			// The OLD agent must no longer be reused (next message opens a fresh
+			// session row), but it must NOT be torn down via handle.dispose() —
+			// that removes its session from the store and the previous
+			// conversation vanishes from the GUI list. Lightweight detach: drop
+			// listeners + tracking so the old session id stays listed; the agent
+			// idles out via the TTL sweep.
 			const t = tracked.get(key);
 			if (t) {
 				disposers.get(key)?.();

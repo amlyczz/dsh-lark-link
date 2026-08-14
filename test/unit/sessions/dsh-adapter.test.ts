@@ -226,7 +226,11 @@ test("adapter: create collision on restart mints a fresh session automatically",
 	// the message is never dropped.
 	assert.equal(registry.resumed.length, 0, "resume must NOT be attempted");
 	assert.equal(registry.created.length, 2, "original + fresh restart create");
-	assert.notEqual(handle.sessionId, first.sessionId, "fresh session after restart");
+	assert.notEqual(
+		handle.sessionId,
+		first.sessionId,
+		"fresh session after restart",
+	);
 	assert.notEqual(handle.agentId, first.agentId, "fresh agent after restart");
 });
 
@@ -250,10 +254,14 @@ test("adapter: create collision mints a fresh session directly (no resume)", asy
 	// reused, resume was never attempted, and the message is not dropped.
 	assert.equal(registry.resumed.length, 0, "resume must NOT be attempted");
 	assert.equal(registry.created.length, 1, "only the fresh create records");
-	assert.notEqual(handle.sessionId, collidedId, "fresh session id, not the collided one");
+	assert.notEqual(
+		handle.sessionId,
+		collidedId,
+		"fresh session id, not the collided one",
+	);
 });
 
-test("adapter: /new (rotate) bumps generation — next agent gets a fresh session id", async () => {
+test("adapter: /new (rotate) mints a wholly fresh session id (new nonce)", async () => {
 	const registry = fakeRegistry();
 	const ctx = ctxOf(registry, undefined);
 	const backend = mkBackend(ctx, undefined, "r3abc789");
@@ -265,10 +273,18 @@ test("adapter: /new (rotate) bumps generation — next agent gets a fresh sessio
 	assert.notEqual(
 		second.sessionId,
 		first.sessionId,
-		"/new gives the next agent a different session id (new generation)",
+		"/new gives the next agent a different session id",
+	);
+	// The fresh id must NOT reuse the old runNonce family — a `:<gen+1>` id
+	// can collide with a persisted log from an earlier run and fail the first
+	// turn ("already persisted at a different cwd (id collision)").
+	assert.notEqual(
+		second.sessionId.split(":")[3],
+		first.sessionId.split(":")[3],
+		"/new mints a new runNonce, not a generation bump",
 	);
 	assert.ok(
-		second.sessionId.endsWith(":1"),
-		"generation 1 suffix on the new session id",
+		second.sessionId.endsWith(":0"),
+		"fresh session starts at generation 0",
 	);
 });
