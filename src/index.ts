@@ -107,7 +107,12 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	// ---- backend: real DSH adapter, falling back to the in-memory mock ------
 	let backend;
 	try {
-		backend = createDshAdapter({ ctx, sessionPrefix: "lark-link", logger });
+		backend = createDshAdapter({
+			ctx,
+			sessionPrefix: "lark-link",
+			logger,
+			cwd: () => getCfg().workspaceRoot || process.cwd(),
+		});
 	} catch (err) {
 		logger.warn(
 			`DSH adapter unavailable — using in-memory backend: ${String(err)}`,
@@ -291,6 +296,31 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		backend,
 		router: routeStore,
 		sender,
+		// DSH attachment store — saves inbound Feishu images as ImageBlocks.
+		attachments: (
+			ctx as unknown as {
+				get?(name: string):
+					| {
+							saveImage(input: {
+								data: Uint8Array;
+								mediaType:
+									| "image/png"
+									| "image/jpeg"
+									| "image/webp"
+									| "image/gif";
+								name?: string;
+							}): Promise<{
+								attachmentId: string;
+								mediaType: string;
+								bytes: number;
+								width: number;
+								height: number;
+								name?: string;
+							}>;
+					  }
+					| undefined;
+			}
+		).get?.("attachments"),
 	});
 
 	// ---- outbox ---------------------------------------------------------------
@@ -353,8 +383,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						payload: { kind: "text", text },
 					});
 				},
-				markDone: () =>
-					bridge.markDone(sessionKey, route.lastMessageId),
+				markDone: () => bridge.markDone(sessionKey, route.lastMessageId),
 			};
 		},
 		cfg: () => ({ streamingEnabled: getCfg().streaming.enabled }),
@@ -401,7 +430,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						): Promise<
 							| {
 									result?: { kind: string; text?: string };
-							}
+							  }
 							| undefined
 						>;
 					};
@@ -421,8 +450,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					line,
 					new AbortController().signal,
 				);
-				if (!out?.result)
-					return { kind: "error", text: `未知命令 /${name}` };
+				if (!out?.result) return { kind: "error", text: `未知命令 /${name}` };
 				return {
 					kind: out.result.kind,
 					text: out.result.text,
@@ -502,9 +530,41 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			case "help":
 				await sender.replyTo(msg, helpCard());
 				return true;
-			case "workspace":
-				await sender.replyTo(msg, `工作区: ${process.cwd()}`);
+			case "workspace": {
+				const arg = _rawInput.trim();
+				if (!arg) {
+					await sender.replyTo(
+						msg,
+						`工作区: ${getCfg().workspaceRoot || process.cwd()}`,
+					);
+					return true;
+				}
+				// /workspace <path> — switch the bridge workspace root: persist it
+				// and dispose hosted sessions so the next message rebuilds agents
+				// under the new cwd (DSH session cwd is fixed at creation).
+				const target = resolve(arg);
+				if (!target.startsWith("/")) {
+					await sender.replyTo(msg, `无效路径: ${arg}`);
+					return true;
+				}
+				try {
+					if (!statSync(target).isDirectory()) {
+						await sender.replyTo(msg, `不是有效目录: ${target}`);
+						return true;
+					}
+				} catch {
+					await sender.replyTo(msg, `目录不存在: ${target}`);
+					return true;
+				}
+				configStore.update({ workspaceRoot: target });
+				configStore.saveOverrides();
+				await conversations?.disposeAll();
+				await sender.replyTo(
+					msg,
+					`工作区已切换: ${target}\n会话已重置，下一条消息在新工作区生效。`,
+				);
 				return true;
+			}
 			case "stop": {
 				const key = bridge.conversationKeyFor(msg);
 				await bridge.conversations?.stop(key);
@@ -724,12 +784,20 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				const cwd = process.cwd();
 				if (!abs.startsWith(cwd)) return "拒绝: 路径不在工作区内";
 				// Resolve the requesting conversation: exec.agent.id is the bridge
-				// session id (lark-link:dm:ou_x / lark-link:group:oc_…).
-				const sessionId = (exec as { agent?: { id?: string } }).agent?.id ?? "";
+				// session id (lark-link:dm:ou_x:nonce). The session id carries the
+				// per-run nonce suffix while route keys do not — prefer the backend
+				// reverse map, else strip the trailing nonce.
+				const sessionId =
+					(exec as { agent?: { id?: string } }).agent?.id ?? "";
 				const prefix = "lark-link:";
-				const key = sessionId.startsWith(prefix)
-					? sessionId.slice(prefix.length)
-					: sessionId;
+				const backendKey = bridge.backend?.keyForSessionId?.(sessionId);
+				const key =
+					backendKey ??
+					(sessionId.startsWith(prefix)
+						? sessionId
+								.slice(prefix.length)
+								.replace(/:[a-z0-9]{8,}$/, "")
+						: sessionId);
 				const route = routeStore.get(key);
 				if (!route) return "错误: 无法定位当前飞书会话";
 				const client = getLarkClient();

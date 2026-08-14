@@ -69,6 +69,8 @@ export interface FeishuConfig {
 	maxSessions: number;
 	/** Owner allowlist (optional): restrict inbound to these open_ids. Empty = all. */
 	allowlist: string[];
+	/** Bridge agent workspace root (cwd for created sessions). Empty = process.cwd(). */
+	workspaceRoot: string;
 }
 
 export const DEFAULT_CONFIG: FeishuConfig = {
@@ -112,6 +114,7 @@ export const DEFAULT_CONFIG: FeishuConfig = {
 	sessionIdleTtlMs: 30 * 60_000,
 	maxSessions: 32,
 	allowlist: [],
+	workspaceRoot: "",
 };
 
 /** Keys that may be hot-reloaded via /lark-config (whitelist, never credentials). */
@@ -119,6 +122,7 @@ export const HOT_RELOADABLE: ReadonlyArray<keyof FeishuConfig> = [
 	"groupPolicy",
 	"groupKeywords",
 	"alsoOnReply",
+	"workspaceRoot",
 	"streaming",
 	"reactions",
 	"denyList",

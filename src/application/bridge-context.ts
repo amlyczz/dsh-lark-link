@@ -27,6 +27,22 @@ export interface FeishuSender {
   listMessages(params: { chatId: string; startTimeMs: number; endTimeMs: number }): Promise<Array<{ messageId: string; timestampMs: number }>>;
 }
 
+/** DSH image-attachment service surface (ctx.attachments). */
+export interface ImageAttachmentService {
+  saveImage(input: {
+    data: Uint8Array;
+    mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+    name?: string;
+  }): Promise<{
+    attachmentId: string;
+    mediaType: string;
+    bytes: number;
+    width: number;
+    height: number;
+    name?: string;
+  }>;
+}
+
 export interface BridgeContextDeps {
   logger: Logger;
   cfg: () => FeishuConfig;
@@ -35,6 +51,8 @@ export interface BridgeContextDeps {
   backend?: DshSessionBackend;
   router?: RouteStore;
   sender?: FeishuSender;
+  /** DSH attachment store (ctx.attachments) — for inbound image blocks. */
+  attachments?: ImageAttachmentService;
 }
 
 /** Read-side surface used by application services. */
@@ -47,6 +65,7 @@ export interface BridgeContextRead {
   get forwarder(): EventForwarder | undefined;
   get compensation(): MissedCompensation | undefined;
   get sender(): FeishuSender | undefined;
+  get attachments(): ImageAttachmentService | undefined;
   get logger(): Logger;
   get cfg(): () => FeishuConfig;
   get configStore(): ConfigStore | undefined;
@@ -119,6 +138,9 @@ export function createBridgeContext(deps: BridgeContextDeps): BridgeContext {
     },
     get sender() {
       return deps.sender;
+    },
+    get attachments() {
+      return deps.attachments;
     },
     get logger() {
       return deps.logger;

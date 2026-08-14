@@ -26,6 +26,8 @@ export interface DshAdapterDeps {
 	ctx: Context;
 	/** Stable session-id prefix so created sessions are bridge-owned. */
 	sessionPrefix: string;
+	/** Workspace root for created sessions — getter so /workspace hot-swaps. */
+	cwd?: () => string;
 	logger?: { info(msg: string): void; warn(msg: string): void };
 }
 
@@ -164,7 +166,11 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				// cwd is REQUIRED: prompt sections like deployment:persona interpolate
 				// {{cwd}} — a session without it fails assembly with
 				// "prompt variable \"{{cwd}}\" has no value for this assembly".
-				meta: { cwd: process.cwd() },
+				// agentPreset: the web profile disables tool rows at the host plane
+				// and mounts them per-session via presets — without "standard" the
+				// bridge agent has NO bash/fs/goal/subagent tools (session-log
+				// evidence: `Error: unknown tool "bash"` / "write_file" / …).
+				meta: { cwd: deps.cwd?.() ?? process.cwd(), agentPreset: "standard" },
 				...(agentOptions ? { agentOptions } : {}),
 				...(defaultModel
 					? {
@@ -190,9 +196,28 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		const handle: AgentHandle = {
 			agentId: agent.id,
 			sessionId,
-			async followup(text: string, _attachments?: AttachmentInput[]) {
+			async followup(text: string, attachments?: AttachmentInput[]) {
+				// Attach inbound Feishu images as ImageBlocks (visual model) and fold
+				// extracted file text into the prompt — the text stays first so the
+				// model sees the message context.
+				const parts = [text];
+				const content: Array<Record<string, unknown>> = [
+					{ type: "text", text },
+				];
+				for (const a of attachments ?? []) {
+					if (a.kind === "image" && a.imageRef) {
+						content.push({ type: "image", attachment: a.imageRef });
+					} else if (a.kind === "file" && a.textPreview) {
+						parts.push(
+							`\n\n[附件 ${a.name ?? "文件"} 内容]\n${a.textPreview}`,
+						);
+					} else if (a.kind === "file") {
+						parts.push(`\n\n[附件 ${a.name ?? "文件"}（未能提取文本）]`);
+					}
+				}
+				content[0] = { type: "text", text: parts.join("") };
 				const message = createUserMessage({
-					content: [{ type: "text", text }],
+					content: content as never,
 					source: { kind: "user" },
 				});
 				// sync, void — errors surface via agent/error and turn/end(rejected)

@@ -107,8 +107,20 @@ export interface SdkClient {
 		messageReaction: {
 			create(opts: Record<string, unknown>): Promise<unknown>;
 		};
-		file: { create(opts: Record<string, unknown>): Promise<unknown> };
-		image: { create(opts: Record<string, unknown>): Promise<unknown> };
+		file: {
+			create(opts: Record<string, unknown>): Promise<unknown>;
+			get?(opts: Record<string, unknown>): Promise<{
+				getReadableStream?(): unknown;
+				writeFile?(path: string): Promise<string>;
+			}>;
+		};
+		image: {
+			create(opts: Record<string, unknown>): Promise<unknown>;
+			get?(opts: Record<string, unknown>): Promise<{
+				getReadableStream?(): unknown;
+				writeFile?(path: string): Promise<string>;
+			}>;
+		};
 	};
 }
 
@@ -270,6 +282,31 @@ export async function buildLarkClient(
 			return sdkClient.im.image.create({ data: p.image }) as Promise<
 				{ image_key?: string } | { data?: { image_key?: string } }
 			>;
+		},
+		async downloadResource(params) {
+			const p = params as {
+				messageId: string;
+				fileKey: string;
+				type: "image" | "file";
+			};
+			// im/v1/messages/:message_id/resources/:file_key returns a binary
+			// stream; drain it into a Buffer for the attachment pipeline.
+			const res = (await sdkClient.request({
+				url: `/open-apis/im/v1/messages/${p.messageId}/resources/${p.fileKey}`,
+				method: "GET",
+				params: { type: p.type },
+				responseType: "stream",
+			})) as
+				| { getReadableStream?: () => NodeJS.ReadableStream }
+				| undefined;
+			const stream = res?.getReadableStream?.();
+			if (!stream)
+				throw new Error(`downloadResource: no stream for ${p.fileKey}`);
+			const chunks: Buffer[] = [];
+			for await (const chunk of stream as AsyncIterable<Uint8Array>) {
+				chunks.push(Buffer.from(chunk));
+			}
+			return Buffer.concat(chunks);
 		},
 	};
 

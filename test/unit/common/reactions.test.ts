@@ -55,6 +55,12 @@ test("reactions: default pool is all Feishu-valid (Fire not FIRE)", () => {
 	for (const t of DEFAULT_RANDOM_POOL) {
 		assert.ok(VALID_EMOJI_TYPES.has(t), `${t} is a valid Feishu emoji_type`);
 	}
-	assert.ok(!DEFAULT_RANDOM_POOL.includes("FIRE"), "FIRE is invalid; Fire is used");
-	assert.ok(DEFAULT_RANDOM_POOL.includes("Fire"), "case-sensitive Fire in pool");
+	assert.ok(
+		!DEFAULT_RANDOM_POOL.includes("FIRE"),
+		"FIRE is invalid; Fire is used",
+	);
+	assert.ok(
+		DEFAULT_RANDOM_POOL.includes("Fire"),
+		"case-sensitive Fire in pool",
+	);
 });

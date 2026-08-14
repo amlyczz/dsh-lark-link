@@ -10,6 +10,10 @@
 - **修复：表情回执全部 400**——默认池含无效 emoji（FIRE/ROCKET/SUN/WHITE_CHECK_MARK，飞书 231001）。对齐 pi-feishu-link 的实测有效集合（大小写敏感：Fire 有效 FIRE 无效），DONE 用 `DONE` 表情；完成 DONE 表情接线（streamFor 返回真实 StreamTarget，对触发消息打 DONE，message-handler 记录 lastMessageId）
 - **修复：飞书侧 DSH 注册命令（/goal 等）全部失效**——原调 `commands.run()` 方法不存在。改调 DSH 真实 API `commands.find(agent,name)` + `commands.execute(agent,line,signal)`
 - **诊断包增强**：`/doctor` 从纯文本回复改为上传诊断报告文件发回飞书（对齐 pi 设计，上传失败回退文本）
+- **修复：bridge agent 无任何工具**（session log 实锤 `unknown tool "bash"/"write_file"/"list_tools"/"goal_get"`）——web profile 在宿主平面禁用工具行、按会话挂载 preset；bridge 创建 agent 时未指定 preset 导致零工具。现 `meta.agentPreset: "standard"`（含 bash/fs/goal/subagent/workflow 全套）
+- **修复：`lark_send_local_file` 报「无法定位当前飞书会话」**——agent.id 带每运行 nonce 后缀而 route key 不带；改用 backend.keyForSessionId 反向映射（回退剥离 nonce）
+- **修复：`/workspace <path>` 切换无效**——现持久化 `workspaceRoot` 到配置并重建会话，下一条消息在新 cwd 生效（无参显示当前工作区）
+- **入站多媒体（M6）**：飞书图片→下载→attachment store（ImageBlock，视觉模型）；文件→下载→有界文本提取。附件解析失败降级为纯文本，不丢消息
 - **修复：桥 agent 无 provider/model → 每轮 turn 报错、飞书无回复**（实测根因）。桥创建的 DSH agent 直接调 `ctx.agents.create({sessionId})` 未携带默认模型；真实 harness 中 `agentDefaultModel` 服务由 headless/gateway 等入口层消费，不会自动注入到裸 create。现在 adapter 像 dsh-headless 一样：读取 `agentDefaultModel.currentSelection()` → 传 `agentOptions:{provider,model}` → `setup` 里 `installModelSelection`（request-waterfall 级联）。无该服务时告警提示
 - **修复：turn-supervisor watchdog 从未 arm**（`turn/start` 未映射 → `arm()` 死代码）。`SessionEventOut` 增加 `turn/start`，adapter 映射该事件，host 在 `onEvent` 里 arm
 - 新增测试：adapter 默认模型注入矩阵（有/无 agentDefaultModel → create 参数）、turn/start 事件映射、assistant 文本提取、fetch registerApp 全流程（begin→QR→poll→凭据）/中止（+7 项，共 121 项）

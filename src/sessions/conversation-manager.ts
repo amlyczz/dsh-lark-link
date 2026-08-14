@@ -4,7 +4,12 @@
 // agents are disposed after TTL, and a persistent sessionKey↔sessionId mapping
 // survives restarts. Harness-agnostic (depends on DshSessionBackend interface).
 
-import type { DshSessionBackend, AgentHandle, SessionEventOut } from "./dsh-session-backend.ts";
+import type {
+  DshSessionBackend,
+  AgentHandle,
+  SessionEventOut,
+  AttachmentInput,
+} from "./dsh-session-backend.ts";
 import type { FeishuInboundMessage } from "../common/types.ts";
 
 export interface ConversationManagerDeps {
@@ -20,7 +25,7 @@ export interface ConversationManagerDeps {
 
 export interface ConversationManager {
   /** Handle an inbound Feishu message: enqueue into the per-key FIFO. */
-  handleMessage(msg: FeishuInboundMessage): Promise<void>;
+  handleMessage(msg: FeishuInboundMessage, attachments?: AttachmentInput[]): Promise<void>;
   /** Key for a message (dm:* for p2p, group:* for group chats). */
   keyFor(msg: FeishuInboundMessage): string;
   /** Cancel the current turn of one conversation (does not touch others). */
@@ -58,7 +63,7 @@ export function createConversationManager(deps: ConversationManagerDeps): Conver
 
   return {
     keyFor,
-    async handleMessage(msg) {
+    async handleMessage(msg, attachments) {
       const key = keyFor(msg);
       await ensureUnderCap();
       const agent: AgentHandle = await deps.backend.ensureAgent(key);
@@ -70,7 +75,7 @@ export function createConversationManager(deps: ConversationManagerDeps): Conver
       const text = msg.text ?? msg.content ?? "";
       await enqueueSerial(key, async () => {
         try {
-          await agent.followup(text);
+          await agent.followup(text, attachments);
         } catch (err) {
           deps.logger?.warn(`followup failed for ${key}: ${String(err)}`);
         }

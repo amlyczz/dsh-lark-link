@@ -14,6 +14,17 @@ export interface AttachmentInput {
   path: string;
   kind: "image" | "file";
   name?: string;
+  /** Extracted text preview (bounded) for inbound files. */
+  textPreview?: string;
+  /** Inbound Feishu image — durable attachment ref for an ImageBlock. */
+  imageRef?: {
+    attachmentId: string;
+    mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+    bytes: number;
+    width: number;
+    height: number;
+    name?: string;
+  };
 }
 
 /** Events the bridge consumes from a DSH session (normalized slice). */

@@ -226,9 +226,7 @@ export function createReactionPicker(
 	pool: readonly string[],
 	done: string,
 ): ReactionPicker {
-	const validPool = pool.filter(
-		(t) => VALID_EMOJI_TYPES.has(t) && t !== done,
-	);
+	const validPool = pool.filter((t) => VALID_EMOJI_TYPES.has(t) && t !== done);
 	const effectivePool =
 		validPool.length > 0
 			? validPool

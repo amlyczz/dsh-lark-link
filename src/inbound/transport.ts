@@ -233,6 +233,12 @@ export interface FeishuClientLike {
 	}): Promise<{ image_key?: string } | { data?: { image_key?: string } }>;
 	/** Add a reaction. */
 	addReaction?(params: unknown): Promise<unknown>;
+	/** Download a message resource (image/file) as bytes. */
+	downloadResource?(params: {
+		messageId: string;
+		fileKey: string;
+		type: "image" | "file";
+	}): Promise<Buffer>;
 	/** List messages in a chat (for missed-compensation). */
 	listMessages?(
 		params: unknown,
@@ -260,6 +266,12 @@ export interface Transport {
 	/** REST probe used by the supervisor. */
 	probe(): Promise<boolean>;
 	botOpenId(): string | undefined;
+	/** Download a message resource (image/file) — inbound multimedia. */
+	downloadResource(params: {
+		messageId: string;
+		fileKey: string;
+		type: "image" | "file";
+	}): Promise<Buffer>;
 }
 
 /** Event name constants. */
@@ -337,6 +349,12 @@ export function createTransport(deps: TransportDeps): Transport {
 			}
 		},
 		botOpenId: () => botOpenId,
+		async downloadResource(params) {
+			const c = client();
+			if (!c.downloadResource)
+				throw new Error("lark client does not support downloadResource");
+			return c.downloadResource(params);
+		},
 	};
 }
 
