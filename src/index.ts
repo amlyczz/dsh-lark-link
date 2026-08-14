@@ -478,6 +478,9 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			void forwarder
 				.onSessionEvent(key, event)
 				.catch((e) => logger.warn(`forwarder: ${String(e)}`));
+			// Arm the turn watchdog when a turn opens; disarm on completion/output.
+			// (Previously arm was never called — the watchdog was dead code.)
+			if (event.type === "turn/start") turnSupervisor.arm(key);
 			if (event.type === "turn/end" || event.type === "assistant/message") {
 				turnSupervisor.disarm(key);
 			}

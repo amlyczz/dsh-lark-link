@@ -18,6 +18,7 @@ export interface AttachmentInput {
 
 /** Events the bridge consumes from a DSH session (normalized slice). */
 export type SessionEventOut =
+  | { type: "turn/start" }
   | { type: "assistant/chunk"; text: string }
   | { type: "assistant/message"; text: string }
   | { type: "turn/end"; reason: string }

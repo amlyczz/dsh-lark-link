@@ -13,6 +13,7 @@ import type { CardKitStreamHandle } from "./cardkit-stream.ts";
 
 /** A normalized slice of the DSH session event surface we care about. */
 export type BridgeSessionEvent =
+  | { type: "turn/start" }
   | { type: "assistant/chunk"; text: string }
   | { type: "assistant/message"; text: string }
   | { type: "turn/end"; reason: string }
@@ -85,6 +86,9 @@ export function createEventForwarder(deps: EventForwarderDeps): EventForwarder {
     state.set(sessionKey, st);
 
     switch (event.type) {
+      case "turn/start":
+        // Watchdog arming is handled by the host (onEvent); no delivery work.
+        break;
       case "assistant/chunk": {
         // Streaming is volatile preview only (ADR-8); the durable per-turn
         // delivery happens on assistant/message. When streaming is off

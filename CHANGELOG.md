@@ -4,10 +4,14 @@
 
 对齐 pi-feishu-link 2026-08-14 实机修复轮：
 
-- **卡片 schema 2.0 按钮规范**：新增欢迎卡/命令面板/状态卡交互按钮——按钮平铺 `body.elements`（`width:"fill"` 防截断），回传用 `behaviors:[{type:"callback",value}]`，**移除 tag:"action" 容器**（飞书 ErrCode 200861）；卡片 action 事件接入桥命令路由（`card.action.trigger` → op 分发）
+- **修复：桥 agent 无 provider/model → 每轮 turn 报错、飞书无回复**（实测根因）。桥创建的 DSH agent 直接调 `ctx.agents.create({sessionId})` 未携带默认模型；真实 harness 中 `agentDefaultModel` 服务由 headless/gateway 等入口层消费，不会自动注入到裸 create。现在 adapter 像 dsh-headless 一样：读取 `agentDefaultModel.currentSelection()` → 传 `agentOptions:{provider,model}` → `setup` 里 `installModelSelection`（request-waterfall 级联）。无该服务时告警提示
+- **修复：turn-supervisor watchdog 从未 arm**（`turn/start` 未映射 → `arm()` 死代码）。`SessionEventOut` 增加 `turn/start`，adapter 映射该事件，host 在 `onEvent` 里 arm
+- 新增测试：adapter 默认模型注入矩阵（有/无 agentDefaultModel → create 参数）、turn/start 事件映射、assistant 文本提取（+4 项，共 118 项）
+- 卡片 schema 2.0 按钮规范：按钮平铺 `body.elements`（`width:"fill"` 防截断），回传用 `behaviors:[{type:"callback",value}]`，**移除 tag:"action" 容器**（飞书 ErrCode 200861）；卡片 action 事件接入桥命令路由（`card.action.trigger` → op 分发）
 - **上传返回双形状兼容**：`uploadFile`/`uploadImage` 同时解析真实 SDK 顶层 `file_key`/`image_key` 与旧 `{data:{...}}` 包裹（`extractUploadKey`）
 - `/support` → `/doctor` 改名（旧名保留兼容）；诊断/帮助文案同步
 - emoji 精简为稳定集合（部分 emoji 在部分客户端字体渲染乱码）
+- 开发：devDependencies 增加 `@deepseek-ai/*` 系列 + tsdown（`npm run check/build` 不再强制依赖本地 DSH checkout）
 - 新增测试：卡片 schema 2.0 结构矩阵（无 action/按钮 behaviors/op 路由）、上传 key 双形状解析（+9 项，共 102 项）
 
 ## 0.1.0

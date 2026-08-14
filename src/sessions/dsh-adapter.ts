@@ -11,7 +11,8 @@
 //     AssistantMessage.content: ContentBlock[]  (no .text shortcut)
 
 import type { Context } from "@deepseek-ai/cordis";
-import type { Agent } from "@deepseek-ai/dsh-agent";
+import { installModelSelection } from "@deepseek-ai/dsh-agent";
+import type { Agent, ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import type {
@@ -30,7 +31,14 @@ export interface DshAdapterDeps {
 
 /** Agent registry surface we consume (dsh-agent). */
 interface AgentRegistrySurface {
-	create(opts: { sessionId: string }): Promise<AgentHandleSurface>;
+	create(opts: {
+		sessionId: string;
+		agentOptions?: {
+			provider: string;
+			model: string;
+		};
+		setup?: (agentCtx: Context) => unknown;
+	}): Promise<AgentHandleSurface>;
 	get(id: string): Agent | undefined;
 }
 
@@ -51,6 +59,8 @@ function textOf(
 
 function toSessionEventOut(ev: SessionEvent): SessionEventOut | undefined {
 	switch (ev.type) {
+		case "turn/start":
+			return { type: "turn/start" };
 		case "assistant/chunk": {
 			const c = ev.data.chunk;
 			if (c.type === "text-delta")
@@ -113,11 +123,44 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		const sessionId = bridgeKey(key);
 		let owned: AgentHandleSurface;
 		try {
-			// CreateAgentOptions.seed is `readonly SessionEvent[]` (a fork prefix);
-			// a fresh per-conversation agent needs none. The sessionId nonce keeps
-			// this id fresh per run, so create never collides with a persisted log
-			// from a previous run.
-			owned = await c.agents.create({ sessionId });
+			// The bridge creates raw agents, so — like dsh-headless — it must
+			// carry the deployment default model (agentDefaultModel service) into
+			// CreateAgentOptions and wire the request-waterfall selection.
+			// Without this every turn fails with "agent has no provider/model"
+			// and inbound messages never get a reply.
+			const defaultModel = (
+				c as unknown as {
+					agentDefaultModel?: {
+						currentSelection(): ModelSelection | undefined;
+					};
+				}
+			).agentDefaultModel?.currentSelection?.();
+			const agentOptions = defaultModel
+				? {
+						provider: defaultModel.provider,
+						model: defaultModel.model,
+					}
+				: undefined;
+			if (!defaultModel) {
+				deps.logger?.warn(
+					`no agentDefaultModel service — bridge agent for ${key} has no provider/model; turns will fail unless one is supplied`,
+				);
+			}
+			owned = await c.agents.create({
+				sessionId,
+				...(agentOptions ? { agentOptions } : {}),
+				...(defaultModel
+					? {
+							setup: (agentCtx: Context) => {
+								installModelSelection(agentCtx, {
+									current: defaultModel,
+									assembled: undefined,
+								});
+								return undefined; // void — the disposer is agentCtx-scoped
+							},
+						}
+					: {}),
+			});
 		} catch (err) {
 			throw new Error(
 				`failed to create DSH agent for ${key}: ${err instanceof Error ? err.message : String(err)}`,
