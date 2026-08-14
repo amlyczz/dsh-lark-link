@@ -82,6 +82,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { readFileSync as rf, writeFileSync as wf } from "node:fs";
 import type { FeishuInboundMessage } from "./common/types.ts";
 
 export const name = "dsh-lark-link";
@@ -143,11 +144,31 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			liveModelSelection.model = cur.model;
 		}
 	}
+	// Stable per-deployment nonce — persisted so bridge session ids survive
+	// dsh restarts (otherwise every reload opens a new GUI session row).
+	const nonceFile = join(dir, "nonce");
+	let runNonce = "";
+	try {
+		runNonce = rf(nonceFile, "utf8").trim();
+	} catch {
+		// first run
+	}
+	if (!runNonce) {
+		runNonce = `${Date.now().toString(36)}${Math.random()
+			.toString(36)
+			.slice(2, 6)}`;
+		try {
+			wf(nonceFile, runNonce, { mode: 0o600 });
+		} catch {
+			// best effort
+		}
+	}
 	let backend: ReturnType<typeof createDshAdapter> | undefined;
 	try {
 		backend = createDshAdapter({
 			ctx,
 			sessionPrefix: "lark-link",
+			runNonce,
 			logger,
 			cwd: () => getCfg().workspaceRoot || process.cwd(),
 			preset: () => {

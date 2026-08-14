@@ -28,6 +28,12 @@ export interface DshAdapterDeps {
 	ctx: Context;
 	/** Stable session-id prefix so created sessions are bridge-owned. */
 	sessionPrefix: string;
+	/**
+	 * Stable per-deployment nonce — persisted across restarts so bridge session
+	 * ids survive dsh reloads (otherwise every restart opens a NEW GUI session
+	 * row and the conversation appears to 'switch sessions' mid-chat).
+	 */
+	runNonce?: string;
 	/** Workspace root for created sessions — getter so /workspace hot-swaps. */
 	cwd?: () => string;
 	/** Agent preset id for created sessions — getter so /mode hot-swaps. */
@@ -144,9 +150,9 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 	// keyBySession/route mapping stays consistent) but unique across runs, so
 	// agents.create never collides with a persisted log from a previous run.
 	// (Cross-restart history needs seed-based resume — follow-up.)
-	const runNonce = `${Date.now().toString(36)}${Math.random()
-		.toString(36)
-		.slice(2, 6)}`;
+	const runNonce =
+		deps.runNonce ??
+		`${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 	// Per-key generation: /new bumps it so the next agent gets a FRESH session
 	// id (a new GUI conversation row) instead of reusing the same log.
 	const generations = new Map<string, number>();

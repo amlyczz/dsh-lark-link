@@ -71,6 +71,17 @@ export function createCommandRouter(deps: CommandRouterDeps): CommandRouter {
 			const rawInput = tokens.slice(1).join(" ");
 			if (BRIDGE_COMMANDS.has(cmdName) || cmdName === "lark") {
 				const handled = await deps.bridgeHandler(cmdName, rawInput, msg);
+				if (handled) {
+					// Command replies get the DONE receipt too (pi design:
+					// 任务完成 → 对触发消息打 DONE)，so /help /status confirm
+					// completion instead of silently ending.
+					const cfg = deps.ctx.cfg();
+					if (cfg.reactions.enabled) {
+						void deps.ctx.sender
+							?.addReaction(msg.messageId, cfg.reactions.done || "DONE")
+							.catch(() => undefined);
+					}
+				}
 				return handled ? "bridge" : "agent";
 			}
 
