@@ -71,12 +71,7 @@ import * as qrcode from "qrcode-terminal";
 import QRCode from "qrcode";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import {
-	mkdirSync,
-	readFileSync,
-	statSync,
-	rmSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, statSync, rmSync } from "node:fs";
 import type { FeishuInboundMessage } from "./common/types.ts";
 
 export const name = "dsh-lark-link";
@@ -693,11 +688,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 							bridge.conversationKeyFor(msg),
 						)?.sessionId;
 						const zipBuf = sessionId
-							? await buildSessionExportZip(
-									sessionId,
-									diag.text,
-									diag.issueMd,
-							  )
+							? await buildSessionExportZip(sessionId, diag.text, diag.issueMd)
 							: undefined;
 						if (zipBuf) {
 							const fileName = `lark-link-doctor-${Date.now()}.zip`;
@@ -1454,16 +1445,13 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						readRaw?(
 							id: string,
 						): Promise<
-							| { filename: string; content: string; meta?: unknown }
-							| undefined
+							{ filename: string; content: string; meta?: unknown } | undefined
 						>;
 				  }
 				| undefined;
 			const query = services.get?.("sessionQuery") as
 				| {
-						traceSession?(
-							id: string,
-						): Promise<{
+						traceSession?(id: string): Promise<{
 							descendants: Array<{
 								session: { header: { id: string } };
 								descendants: Array<{
@@ -1472,7 +1460,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 								}>;
 							}>;
 						}>;
-					}
+				  }
 				| undefined;
 			if (!persistence?.readRaw) return undefined;
 
@@ -1483,14 +1471,19 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			const files: Array<{ name: string; data: Uint8Array }> = [];
 			const root = await persistence.readRaw(sessionId);
 			if (root === undefined) return undefined;
-			files.push({ name: root.filename, data: Buffer.from(root.content, "utf8") });
+			files.push({
+				name: root.filename,
+				data: Buffer.from(root.content, "utf8"),
+			});
 
 			// Descendant (subagent) logs.
 			const seen = new Set<string>([sessionId]);
-			const collect = async (nodes: Array<{
-				session: { header: { id: string } };
-				descendants: unknown[];
-			}>): Promise<void> => {
+			const collect = async (
+				nodes: Array<{
+					session: { header: { id: string } };
+					descendants: unknown[];
+				}>,
+			): Promise<void> => {
 				for (const node of nodes) {
 					const id = node.session.header.id;
 					if (seen.has(id)) continue;
@@ -1514,7 +1507,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			// ISSUE.md + README (diagnostic bundle extras).
 			files.push({
 				name: "ISSUE.md",
-				data: Buffer.from(`# dsh-lark-link 诊断包\n\n${diagText}\n\n${issueMd}\n`, "utf8"),
+				data: Buffer.from(
+					`# dsh-lark-link 诊断包\n\n${diagText}\n\n${issueMd}\n`,
+					"utf8",
+				),
 			});
 			files.push({
 				name: "README.txt",
@@ -1531,37 +1527,20 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				),
 			});
 
-			// fflate ZIP (streaming deflate; same compressor the host export uses).
-			const { Zip, ZipDeflate } = await import("fflate");
-			const out: Buffer[] = [];
-			const archive = new Zip((err, data, final) => {
-				if (err) throw err;
-				if (data.length) out.push(Buffer.from(data));
-				if (final) {
-					const complete = Buffer.concat(out);
-					out.length = 0;
-					out.push(complete);
-				}
-			});
+			// fflate sync ZIP (same compressor family the host export uses;
+			// zipSync returns the archive directly — the streaming Zip callback
+			// fires asynchronously, so reading its output synchronously would
+			// yield an empty buffer).
+			const { zipSync, strToU8 } = await import("fflate");
+			const entries: Record<string, Uint8Array> = {};
 			for (const f of files) {
-				const def = new ZipDeflate(f.name, { level: 6 });
-				archive.add(def);
-				const data = f.data;
-				const chunk = Buffer.alloc(65536);
-				for (let off = 0; off < data.length; off += 65536) {
-					const part = data.subarray(off, Math.min(off + 65536, data.length));
-					chunk.set(part);
-					def.push(Buffer.from(chunk.subarray(0, part.length)), false);
-				}
-				def.push(new Uint8Array(0), true);
+				entries[f.name] = strToU8(new TextDecoder().decode(f.data));
 			}
-			archive.end();
-			return Buffer.concat(out);
+			return Buffer.from(zipSync(entries, { level: 6 }));
 		} catch {
 			return undefined;
 		}
 	};
-
 
 	const runSetup = async (): Promise<string> => {
 		const ref = getCfg().credentialRef;
