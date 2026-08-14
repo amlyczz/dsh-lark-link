@@ -46,22 +46,29 @@
 
 ## 🚀 快速开始
 
-**标准方式（官方 `dsh plugin` 机制，无侵入）**：
+**标准方式（官方 `dsh plugin` 机制，无侵入）**——包以官方 bundle 格式分发（`package.json` 的 `dsh.bundle` + `cordis.patch.yml`），安装后自动并入 profile 的 `dsh.profile.bundles` 层：
 
 ```bash
-# npm 发布后（推荐，装预构建产物，无需构建许可）：
-dsh plugin add dsh-lark-link --ignore-scripts
+# 1. 安装插件（npm 官方包，装预构建产物，无需构建许可）：
+dsh plugin --profile web add dsh-lark-link --ignore-scripts
 
-# 或本地 tarball：
-dsh plugin add ./dsh-lark-link-0.1.1.tgz --ignore-scripts
+#   或本地 tarball：
+#   dsh plugin --profile web add ./dsh-lark-link-0.2.0.tgz --ignore-scripts
+#   或 GitHub 源码（需 prepare 构建 + allowBuilds 许可）：
+#   dsh plugin --profile web add github:amlyczz/dsh-lark-link
 ```
 
-> `--ignore-scripts`：飞书 SDK 的传递依赖 protobufjs 带一个可忽略的 postinstall，pnpm 11 安全策略会拦截；加此参数跳过（完全可用）。
+> `--ignore-scripts`：飞书 SDK 的传递依赖 protobufjs 带一个可忽略的 postinstall，pnpm 11 安全策略会拦截并返回非零退出码；加此参数跳过（protobufjs 不执行 postinstall 完全可用）。若你的 pnpm 已全局放行，可不加。
+>
+> `--profile web`：指定安装到哪个 profile（web / tui / headless）。`dsh plugin` 是 pnpm 的转发命令，用法为 `dsh plugin --profile <name> <pnpm 参数>`。
 
 ```bash
-dsh web                      # 启动 DSH Web GUI
-/lark setup                  # 扫码创建飞书应用（30 秒）
-/lark start                  # 启动桥接
+# 2. 启动 DSH Web GUI
+dsh web
+
+# 3. 在 GUI 的输入框（或终端 CLI）执行：
+/lark setup       # 扫码创建飞书应用（30 秒，面板显示二维码）
+/lark start       # 启动桥接
 ```
 
 然后**飞书搜索你的机器人，发任意消息**——收到表情回执 + 完整回复即端到端连通。群聊**免 @**，直接说话即可。
@@ -142,7 +149,7 @@ MIT — 自由使用、修改、分发。
 ## 🚀 Quickstart
 
 ```bash
-dsh plugin add dsh-lark-link --ignore-scripts
+dsh plugin --profile web add dsh-lark-link --ignore-scripts
 dsh web
 /lark setup          # scan QR (30s)
 /lark start
