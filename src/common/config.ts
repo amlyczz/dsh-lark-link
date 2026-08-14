@@ -79,7 +79,9 @@ export interface FeishuConfig {
 
 export const DEFAULT_CONFIG: FeishuConfig = {
 	credentialRef: "LARK_LINK_APP",
-	groupPolicy: "mention",
+	// 群聊免 @（对齐 pi-feishu-link：setup 已申请群聊全量权限）——
+	// 群聊里任何消息都触发，不必 @ 机器人。
+	groupPolicy: "open",
 	groupKeywords: ["lark", "小斯"],
 	alsoOnReply: true,
 	streaming: {
