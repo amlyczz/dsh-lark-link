@@ -50,6 +50,7 @@ import {
 	markdownCard,
 	looksLikeMarkdown,
 	modeCard,
+	modelCard,
 	permissionCard,
 	withButtons,
 	button,
@@ -674,30 +675,38 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					| undefined;
 				const current = adm?.currentSelection?.();
 				if (!arg) {
-					const lines = [
-						`**当前模型**: ${current?.provider ?? "?"}/${current?.model ?? "未设置"}`,
-					];
+					// Picker card: one button per model (single-select, no typing).
+					const models: Array<{
+						provider: string;
+						id: string;
+						name?: string;
+					}> = [];
 					const providers = llm?.listProviders?.() ?? [];
 					for (const p of providers) {
-						let models: Array<{ id: string; name?: string }> = [];
 						try {
-							models = (await llm?.listModels?.(p.id ?? "")) ?? [];
+							for (const m of (await llm?.listModels?.(p.id ?? "")) ??
+								[]) {
+								models.push({
+									provider: p.id ?? "",
+									id: m.id,
+									name: m.name,
+								});
+							}
 						} catch {
 							// adapter without a catalog — skip
 						}
-						if (models.length === 0) continue;
-						lines.push("", `**${p.name ?? p.id}**`);
-						for (const m of models) {
-							lines.push(
-								`- ${m.id}${current?.model === m.id ? " ← 当前" : ""}`,
-							);
-						}
 					}
-					lines.push(
-						"",
-						"切换：/model <provider>/<model>（如 /model deepseek-official/deepseek-v4-flash）",
+					await sender.sendCard(
+						msg.chatId,
+						withButtons(
+							modelCard(current, models),
+							models.map((m) =>
+								button(m.id, {
+									op: `model:${m.provider}/${m.id}`,
+								}),
+							),
+						),
 					);
-					await sender.replyTo(msg, lines.join("\n"));
 					return true;
 				}
 				// Switch: accept provider/model or bare model id (same provider).
@@ -858,7 +867,14 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			};
 			const value = raw.action?.value ?? {};
 			const op = typeof value.op === "string" ? value.op : "";
-			const chatId = raw.open_id ?? "";
+			logger.info(`card action data: ${JSON.stringify(raw).slice(0, 600)}`);
+			const chatId =
+				(raw as { context?: { open_chat_id?: string } }).context
+					?.open_chat_id ??
+				(raw as { operator?: { operator_id?: { open_id?: string } } })
+					.operator?.operator_id?.open_id ??
+				raw.open_id ??
+				"";
 			const messageId = raw.message?.message_id ?? "";
 			if (!op) return;
 			// op may be "name" (bare command) or "name:input" (picker callback).

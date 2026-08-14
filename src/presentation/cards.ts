@@ -116,6 +116,24 @@ export function modeCard(current?: string): unknown {
 	};
 }
 
+/** Single-select model picker card (buttons per model). */
+export function modelCard(
+	current: { provider?: string; model?: string } | undefined,
+	models: ReadonlyArray<{ provider: string; id: string; name?: string }>,
+): unknown {
+	const lines = [
+		`**当前模型**: ${current?.provider ?? "?"}/${current?.model ?? "未设置"}`,
+		"",
+		"**可选模型**（单选，点按钮即切换，下条消息生效）",
+		"",
+		...models.map(
+			(m) => `- ${m.id}${current?.model === m.id ? " ← 当前" : ""}`,
+		),
+	];
+	if (models.length === 0) lines.push("（无可用模型列表）");
+	return markdownCard(lines.join("\n"), { header: "切换模型", accent: true });
+}
+
 /** Single-select permission picker card. */
 export function permissionCard(current?: string): unknown {
 	return markdownCard(
@@ -136,15 +154,19 @@ export function permissionCard(current?: string): unknown {
 export function helpCard(): unknown {
   return markdownCard(
     [
-      "**可用命令**",
+      "**可用命令**（点按钮或直接输入）",
       "",
       "- `/status` 桥接状态",
-      "- `/workspace` 当前工作区",
+      "- `/mode` 切换 Agent 模式（标准/PTC/极简/创造）",
+      "- `/permission` 切换权限（只读/工作区写/Full access）",
+      "- `/workspace <路径>` 切换工作区（`~` 可用）",
       "- `/stop` 停止当前会话任务",
-      "- `/doctor` 生成诊断包",
+      "- `/doctor` 生成诊断包（含 session log）",
+      "- `/model` 查看/切换模型",
       "- `/lark-config k=v` 热改配置",
-      "- `/model` `/goal` 等 DSH 命令原样执行",
-      "- skill 无需前缀：直接说任务（如「用 X skill 做 Y」），模型自动加载",
+      "- `/lark setup|start|stop|status` 桥接管理",
+      "- `/goal` 等 DSH 命令原样执行",
+      "- skill 无需前缀：直接说任务（如「用 X skill 做 Y」）",
     ].join("\n"),
     { header: "Lark Link 帮助", accent: true },
   );
@@ -179,7 +201,7 @@ export function commandPanelCard(): unknown {
         button("工作区", { op: "workspace" }),
         button("诊断包", { op: "doctor" }),
         button("配置", { op: "lark-config" }),
-        { tag: "markdown", content: "文本命令：`/status` `/workspace` `/stop` `/doctor` `/lark-config k=v` `/help`\n\n`/goal` 等 DSH 命令原样执行；skill 无需前缀，直接描述任务即可。" },
+        { tag: "markdown", content: "文本命令：`/status` `/mode` `/permission` `/workspace` `/stop` `/doctor` `/help`\n\n`/goal` 等 DSH 命令原样执行；skill 无需前缀，直接描述任务即可。" },
       ],
     },
   };
