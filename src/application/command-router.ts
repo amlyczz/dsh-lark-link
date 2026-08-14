@@ -49,6 +49,8 @@ const BRIDGE_COMMANDS = new Set([
 	"help",
 	"feishu-config",
 	"model",
+	"mode",
+	"permission",
 ]);
 
 export function createCommandRouter(deps: CommandRouterDeps): CommandRouter {

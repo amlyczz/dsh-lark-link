@@ -67,6 +67,72 @@ export function markdownCard(
   };
 }
 
+/** Agent preset options (DSH agent-presets). */
+export const AGENT_PRESETS: ReadonlyArray<{
+	id: string;
+	label: string;
+	desc: string;
+}> = [
+	{ id: "standard", label: "标准模式", desc: "全能：文件/Shell/检索/Skills/目标/子代理/工作流" },
+	{ id: "ptc", label: "PTC 模式", desc: "标准能力 + Code Mode（多步操作一次执行，更快）" },
+	{ id: "minimal", label: "极简模式", desc: "仅 bash + 文件编辑，轻量省 token" },
+	{ id: "cordis", label: "创造模式", desc: "标准能力 + preset 创作工具（面向开发者）" },
+];
+
+/** Permission preset options (dsh-permission-presets). */
+export const PERMISSION_PRESETS: ReadonlyArray<{
+	id: string;
+	label: string;
+	desc: string;
+}> = [
+	{ id: "read-only", label: "只读", desc: "沙箱只读，危险操作需审批" },
+	{ id: "workspace-write", label: "工作区写", desc: "仅工作区可写，危险操作需审批" },
+	{ id: "danger-full-access", label: "Full access", desc: "全访问 + 审批 never（默认）" },
+];
+
+/** Append action buttons to a markdown card's body. */
+export function withButtons(card: unknown, buttons: unknown[]): unknown {
+	const c = card as { body?: { elements?: unknown[] } };
+	return {
+		...c,
+		body: { ...(c.body ?? {}), elements: [...(c.body?.elements ?? []), ...buttons] },
+	};
+}
+
+/** Single-select mode picker card — tap a button to switch (no typing). */
+export function modeCard(current?: string): unknown {
+	return markdownCard(
+		[
+			"**Agent 模式**（单选，点按钮即切换，下条消息生效）",
+			"",
+			...AGENT_PRESETS.map(
+				(p) =>
+					`- ${p.label}${current === p.id ? " ← 当前" : ""}：${p.desc}`,
+			),
+		].join("\n"),
+		{ header: "切换模式", accent: true },
+	) as {
+		body: { elements: unknown[] };
+	};
+}
+
+/** Single-select permission picker card. */
+export function permissionCard(current?: string): unknown {
+	return markdownCard(
+		[
+			"**权限模式**（单选，点按钮即切换）",
+			"",
+			...PERMISSION_PRESETS.map(
+				(p) =>
+					`- ${p.label}${current === p.id ? " ← 当前" : ""}：${p.desc}`,
+			),
+		].join("\n"),
+		{ header: "切换权限", accent: true },
+	) as {
+		body: { elements: unknown[] };
+	};
+}
+
 export function helpCard(): unknown {
   return markdownCard(
     [

@@ -45,7 +45,17 @@ import { createConfigStore } from "./common/config.ts";
 import { createLogger, type Logger } from "./common/logger.ts";
 import { createDedupeStore } from "./common/dedupe-store.ts";
 import { createQuotaGovernor } from "./common/quota-governor.ts";
-import { helpCard, markdownCard, looksLikeMarkdown } from "./presentation/cards.ts";
+import {
+	helpCard,
+	markdownCard,
+	looksLikeMarkdown,
+	modeCard,
+	permissionCard,
+	withButtons,
+	button,
+	AGENT_PRESETS,
+	PERMISSION_PRESETS,
+} from "./presentation/cards.ts";
 import { createAuthSetup, registerAppWithFetch } from "./host/auth-setup.ts";
 import {
 	resolveCredentials,
@@ -122,6 +132,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			sessionPrefix: "lark-link",
 			logger,
 			cwd: () => getCfg().workspaceRoot || process.cwd(),
+			preset: () => getCfg().agentPreset || "ptc",
 		});
 	} catch (err) {
 		logger.warn(
@@ -724,6 +735,101 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				);
 				return true;
 			}
+			case "mode": {
+				// /mode — picker card (single-select buttons) or switch by name.
+				const arg = _rawInput.trim().toLowerCase();
+				if (!arg) {
+					await sender.sendCard(
+						msg.chatId,
+						withButtons(
+							modeCard(getCfg().agentPreset),
+							AGENT_PRESETS.map((p) =>
+								button(p.label, { op: `mode:${p.id}` }),
+							),
+						),
+					);
+					return true;
+				}
+				if (!AGENT_PRESETS.some((p) => p.id === arg)) {
+					await sender.replyTo(
+						msg,
+						`未知模式 ${arg}（可用: ${AGENT_PRESETS.map((p) => p.id).join(", ")}）`,
+					);
+					return true;
+				}
+				configStore.update({ agentPreset: arg });
+				configStore.saveOverrides();
+				await conversations?.disposeAll();
+				await sender.replyTo(
+					msg,
+					`模式已切换为 ${arg}（会话已重置，下条消息生效）`,
+				);
+				return true;
+			}
+			case "permission": {
+				// /permission — picker card or switch by name. The DSH side also
+				// registers a /permission command; this bridge handler wins first
+				// (Tier 1) so the picker card shows instead of plain text.
+				const arg = _rawInput.trim().toLowerCase();
+				if (!arg) {
+					await sender.sendCard(
+						msg.chatId,
+						withButtons(
+							permissionCard(getCfg().permissionMode),
+							PERMISSION_PRESETS.map((p) =>
+								button(p.label, { op: `permission:${p.id}` }),
+							),
+						),
+					);
+					return true;
+				}
+				if (!PERMISSION_PRESETS.some((p) => p.id === arg)) {
+					await sender.replyTo(
+						msg,
+						`未知权限 ${arg}（可用: ${PERMISSION_PRESETS.map((p) => p.id).join(", ")}）`,
+					);
+					return true;
+				}
+				// Apply on the live DSH permission service (session-scoped knobs).
+				try {
+					const services = ctx as unknown as {
+						get?(name: string): unknown;
+					};
+					const sessionId = bridge.backend?.get(
+						bridge.conversationKeyFor(msg),
+					)?.sessionId;
+					const agent = sessionId
+						? ((services.get?.("agents") as {
+								get?(id: string): { session: unknown };
+							})?.get?.(sessionId))
+						: undefined;
+					const permission = services.get?.("permissionPresets") as
+						| {
+								apply?(
+									session: unknown,
+									name: string,
+									setApproval: (policy: string) => void,
+								): void;
+						  }
+						| undefined;
+					if (agent?.session && permission?.apply) {
+						permission.apply(agent.session, arg, (policy) => {
+							const approval = services.get?.("approval") as
+								| { setPolicy?(agent: unknown, policy: string): unknown }
+								| undefined;
+							approval?.setPolicy?.(agent, policy);
+						});
+					}
+				} catch (err) {
+					logger.warn(
+						`permission switch failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+				configStore.update({ permissionMode: arg });
+				configStore.saveOverrides();
+				await sender.replyTo(msg, `权限已切换为 ${arg}`);
+				return true;
+			}
 			case "lark": {
 				// Feishu-side /lark subcommands — same executor as the DSH command.
 				const sub = _rawInput.trim().split(/\s+/)[0] ?? "";
@@ -755,6 +861,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			const chatId = raw.open_id ?? "";
 			const messageId = raw.message?.message_id ?? "";
 			if (!op) return;
+			// op may be "name" (bare command) or "name:input" (picker callback).
+			const sep = op.indexOf(":");
+			const cmd = sep === -1 ? op : op.slice(0, sep);
+			const arg = sep === -1 ? "" : op.slice(sep + 1);
 			const pseudo: FeishuInboundMessage = {
 				messageId,
 				chatId,
@@ -767,7 +877,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				mentions: [],
 				timestamp: Date.now(),
 			};
-			await bridgeHandler(op, "", pseudo);
+			await bridgeHandler(cmd, arg, pseudo);
 		} catch (err) {
 			logger.error(`card action failed: ${String(err)}`);
 		}

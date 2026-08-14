@@ -14,6 +14,7 @@
 - **修复：`lark_send_local_file` 报「无法定位当前飞书会话」**——agent.id 带每运行 nonce 后缀而 route key 不带；改用 backend.keyForSessionId 反向映射（回退剥离 nonce）
 - **修复：`/workspace <path>` 切换无效**——现持久化 `workspaceRoot` 到配置并重建会话，下一条消息在新 cwd 生效（无参显示当前工作区）
 - **入站多媒体（M6）**：飞书图片→下载→attachment store（ImageBlock，视觉模型）；文件→下载→有界文本提取。附件解析失败降级为纯文本，不丢消息
+- **新增：模式/权限选择卡片**——飞书 `/mode` 发单选按钮卡片（标准/PTC/极简/创造，点选即切、重建会话下条生效），`/permission` 发权限卡片（只读/工作区写/Full access，点选调 DSH permission 服务切换）。默认 `agentPreset=ptc` + `permissionMode=danger-full-access`（Full access 另经 profile 用户层 sandbox-policy 持久化）；`/lark-config agentPreset=xxx` 文本通道保留
 - **修复：`lark_send_local_file` 上传 400（234001）**——飞书 `im/v1/files` 的 `file_type` 只接受 `opus|mp4|pdf|doc|xls|ppt|stream`，"file" 无效。现按扩展名映射（pdf/doc/xls/ppt/mp4/opus），其余默认 `stream`（实测 `stream` 上传成功）
 - **修复：bridge agent 仍只有 2 个工具（画图发文件失败）**——`meta.agentPreset` 写入 header 但工具未挂载：preset 需在 agent `setup(agentCtx)` 里显式 `agentPresets.mount(agentCtx, "standard")`（GUI 经 apiproxy 的 composeAgent 就是这样做的）。setup 现无条件执行（模型选择可选、preset 挂载必做）
 - **修复：会话显示在「未分组」**——DSH 工作区记录只在 GUI 选择工作区时创建；bridge 现于 agent 创建时对会话 cwd 调 `workspaceRegistry.create()`（best-effort），/workspace 切换后同样生效

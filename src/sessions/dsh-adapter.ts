@@ -29,6 +29,8 @@ export interface DshAdapterDeps {
 	sessionPrefix: string;
 	/** Workspace root for created sessions — getter so /workspace hot-swaps. */
 	cwd?: () => string;
+	/** Agent preset id for created sessions — getter so /mode hot-swaps. */
+	preset?: () => string;
 	logger?: { info(msg: string): void; warn(msg: string): void };
 }
 
@@ -171,7 +173,10 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				// and mounts them per-session via presets — without "standard" the
 				// bridge agent has NO bash/fs/goal/subagent tools (session-log
 				// evidence: `Error: unknown tool "bash"` / "write_file" / …).
-				meta: { cwd: deps.cwd?.() ?? process.cwd(), agentPreset: "standard" },
+				meta: {
+					cwd: deps.cwd?.() ?? process.cwd(),
+					agentPreset: deps.preset?.() ?? "ptc",
+				},
 				...(agentOptions ? { agentOptions } : {}),
 				setup: async (agentCtx: Context) => {
 					// Model selection (optional — depends on the deployment
@@ -201,7 +206,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 						}
 					).get?.("agentPresets");
 					if (presets?.mount) {
-						await presets.mount(agentCtx, "standard");
+						await presets.mount(agentCtx, deps.preset?.() ?? "ptc");
 					}
 					return undefined; // void — disposer is agentCtx-scoped
 				},
@@ -223,10 +228,16 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				c as unknown as {
 					get?(name: string):
 						| {
-								create?(path: string, title?: string): Promise<{
-									attachSession?(sessionId: string): Promise<unknown>;
-								} | undefined>;
-							}
+								create?(
+									path: string,
+									title?: string,
+								): Promise<
+									| {
+											attachSession?(sessionId: string): Promise<unknown>;
+									  }
+									| undefined
+								>;
+						  }
 						| undefined;
 				}
 			).get?.("workspaceRegistry");
