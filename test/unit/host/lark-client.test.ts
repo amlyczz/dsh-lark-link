@@ -258,7 +258,8 @@ test("lark-client: uploadFile/uploadImage pass the Buffer through", async () => 
 		data: { file_type: string; file_name: string; file: Buffer };
 	};
 	assert.deepEqual(fc.data.file, buf);
-	assert.equal(fc.data.file_type, "file");
+	// "file" is not a valid Feishu file_type — .txt maps to "stream".
+	assert.equal(fc.data.file_type, "stream");
 	assert.equal(fc.data.file_name, "x.txt");
 	const ik = await client.uploadImage!({ image: buf });
 	assert.equal((ik as { image_key: string }).image_key, "image.create");

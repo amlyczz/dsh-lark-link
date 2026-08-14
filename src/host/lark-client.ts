@@ -272,11 +272,26 @@ export async function buildLarkClient(
 				file_name?: string;
 				file: Buffer;
 			};
-			// SDK im.v1.file.create expects data: {file_type, file_name, file}
-			// (multipart) — passing a bare Buffer 400s (code 9499).
+			// Feishu im/v1/files only accepts opus|mp4|pdf|doc|xls|ppt|stream —
+			// "file" 400s (234001 Invalid request param). Map by extension and
+			// default to stream (generic). SDK create takes
+			// data: {file_type, file_name, file} (multipart).
+			const ext = (p.file_name ?? "").split(".").pop()?.toLowerCase() ?? "";
+			const FILE_TYPE_BY_EXT: Record<string, string> = {
+				pdf: "pdf",
+				doc: "doc",
+				docx: "doc",
+				xls: "xls",
+				xlsx: "xls",
+				ppt: "ppt",
+				pptx: "ppt",
+				mp4: "mp4",
+				opus: "opus",
+			};
+			const fileType = FILE_TYPE_BY_EXT[ext] ?? "stream";
 			return sdkClient.im.file.create({
 				data: {
-					file_type: p.file_type,
+					file_type: fileType,
 					file_name: p.file_name ?? "file",
 					file: p.file,
 				},
