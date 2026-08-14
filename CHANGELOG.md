@@ -14,6 +14,8 @@
 - **修复：`lark_send_local_file` 报「无法定位当前飞书会话」**——agent.id 带每运行 nonce 后缀而 route key 不带；改用 backend.keyForSessionId 反向映射（回退剥离 nonce）
 - **修复：`/workspace <path>` 切换无效**——现持久化 `workspaceRoot` 到配置并重建会话，下一条消息在新 cwd 生效（无参显示当前工作区）
 - **入站多媒体（M6）**：飞书图片→下载→attachment store（ImageBlock，视觉模型）；文件→下载→有界文本提取。附件解析失败降级为纯文本，不丢消息
+- **修复：回复不渲染 markdown**——sendText 现自动检测 markdown 内容（标题/列表/代码块/表格/粗体）并改为 CardKit 卡片（`tag:"markdown"`）发送，纯文本仍走 text 消息（对齐 pi rich-text 模式选择）
+- **修复：`/workspace ~/path` 报目录不存在**——`~` 未展开且相对路径拼到旧 cwd 前。现展开 `~`/`~/`，相对路径基于当前工作区解析
 - **修复：飞书侧 `/model` 无反应**——web profile 无 dsh-command-model 插件（GUI 的 /model 是客户端命令），Tier 2 又要求会话 agent 已存在。现桥实现 `/model`（列当前+可用模型，`/model <provider>/<model>` 切换并重建会话）；Tier 2 懒创建会话 agent（首条命令消息不再跳过 DSH 命令）
 - **修复：桥 agent 无 provider/model → 每轮 turn 报错、飞书无回复**（实测根因）。桥创建的 DSH agent 直接调 `ctx.agents.create({sessionId})` 未携带默认模型；真实 harness 中 `agentDefaultModel` 服务由 headless/gateway 等入口层消费，不会自动注入到裸 create。现在 adapter 像 dsh-headless 一样：读取 `agentDefaultModel.currentSelection()` → 传 `agentOptions:{provider,model}` → `setup` 里 `installModelSelection`（request-waterfall 级联）。无该服务时告警提示
 - **修复：turn-supervisor watchdog 从未 arm**（`turn/start` 未映射 → `arm()` 死代码）。`SessionEventOut` 增加 `turn/start`，adapter 映射该事件，host 在 `onEvent` 里 arm

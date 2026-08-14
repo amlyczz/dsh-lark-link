@@ -45,7 +45,7 @@ import { createConfigStore } from "./common/config.ts";
 import { createLogger, type Logger } from "./common/logger.ts";
 import { createDedupeStore } from "./common/dedupe-store.ts";
 import { createQuotaGovernor } from "./common/quota-governor.ts";
-import { helpCard } from "./presentation/cards.ts";
+import { helpCard, markdownCard, looksLikeMarkdown } from "./presentation/cards.ts";
 import { createAuthSetup, registerAppWithFetch } from "./host/auth-setup.ts";
 import {
 	resolveCredentials,
@@ -228,6 +228,20 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		async sendText(chatId, text) {
 			const client = getLarkClient();
 			if (!client?.sendMessage) throw new Error("lark client not ready");
+			// Markdown-ish replies render as CardKit cards (飞书 markdown 元素);
+			// plain text stays a text message. Card size is bounded — oversize
+			// replies fall back to plain text.
+			if (looksLikeMarkdown(text) && text.length <= 28_000) {
+				await client.sendMessage({
+					receive_id_type: chatId.startsWith("oc_") ? "chat_id" : "open_id",
+					params: {
+						receive_id: chatId,
+						msg_type: "interactive",
+						content: JSON.stringify(markdownCard(text)),
+					},
+				});
+				return;
+			}
 			await client.sendMessage({
 				receive_id_type: chatId.startsWith("oc_") ? "chat_id" : "open_id",
 				params: {
@@ -542,7 +556,16 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// /workspace <path> — switch the bridge workspace root: persist it
 				// and dispose hosted sessions so the next message rebuilds agents
 				// under the new cwd (DSH session cwd is fixed at creation).
-				const target = resolve(arg);
+				// Expand ~ and relative paths against the current workspace.
+				const expanded =
+					arg === "~" || arg.startsWith("~/")
+						? join(homedir(), arg.slice(arg.startsWith("~/") ? 2 : 1))
+						: arg;
+				const target = resolve(
+					expanded.startsWith("/")
+						? expanded
+						: join(getCfg().workspaceRoot || process.cwd(), expanded),
+				);
 				if (!target.startsWith("/")) {
 					await sender.replyTo(msg, `无效路径: ${arg}`);
 					return true;
@@ -582,15 +605,17 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				};
 				const adm = services.get?.("agentDefaultModel") as
 					| {
-							currentSelection?(): {
-								provider?: string;
-								model?: string;
-							} | undefined;
+							currentSelection?():
+								| {
+										provider?: string;
+										model?: string;
+								  }
+								| undefined;
 							saveSelection?(s: {
 								provider: string;
 								model: string;
 							}): Promise<unknown>;
-						}
+					  }
 					| undefined;
 				const llm = services.get?.("llm") as
 					| {
@@ -598,7 +623,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 							listModels?(
 								p: string,
 							): Promise<Array<{ id: string; name?: string }>>;
-						}
+					  }
 					| undefined;
 				const current = adm?.currentSelection?.();
 				if (!arg) {
@@ -609,8 +634,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					for (const p of providers) {
 						let models: Array<{ id: string; name?: string }> = [];
 						try {
-							models =
-								(await llm?.listModels?.(p.id ?? "")) ?? [];
+							models = (await llm?.listModels?.(p.id ?? "")) ?? [];
 						} catch {
 							// adapter without a catalog — skip
 						}

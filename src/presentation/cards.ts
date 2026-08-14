@@ -29,6 +29,24 @@ export function button(text: string, value: CardButtonValue, style?: "primary" |
   return b;
 }
 
+/**
+ * Heuristic: does this reply carry markdown worth rendering as a card?
+ * Matches headings, lists, fenced code, blockquotes, bold, tables and
+ * paragraph breaks (pi-feishu-link rich-text mode selection).
+ */
+export function looksLikeMarkdown(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (
+    /(^|\n)\s*(#{1,6}\s|[-*+]\s|\d+\.\s|```|>\s|\*\*|\|.*\|)/.test(
+      t,
+    ) ||
+    t.includes("\n\n")
+  )
+    return true;
+  return false;
+}
+
 export function markdownCard(markdown: string, opts: { header?: string; accent?: boolean } = {}): unknown {
   return {
     schema: "2.0",
