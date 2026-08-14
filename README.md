@@ -4,9 +4,18 @@
   <img src="assets/preview.svg" alt="dsh-lark-link banner" width="100%"/>
 </p>
 
-**DeepSeek Harness × 飞书/Lark 双向桥接插件** — 高可靠飞书桥：扫码 30 秒上线 · 消息零丢失 · CardKit 流式 · 每飞书会话独立 DSH agent · 复用 DSH Web GUI
+---
 
-> 设计 spec：[`.spec/2026-08-13-2333-dsh-lark-link综合设计spec.md`](.spec/2026-08-13-2333-dsh-lark-link综合设计spec.md)
+# 中文
+
+> 全网统一昵称：**小斯syzs**
+>
+> B站 [@小斯syzs](https://space.bilibili.com/390211071) · 抖音 · 小红书 · 快手（全网同名，搜 **小斯syzs**）
+>
+> 💬 加入飞书交流群：**[点击加入](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=45al067b-19ea-4fa0-bba6-d550be5fe2ea)**（反馈问题 / 交流用法）
+
+---
+**DeepSeek Harness × 飞书/Lark 双向桥接插件** — 高可靠飞书桥：扫码 30 秒上线 · 消息零丢失 · CardKit 流式 · 每飞书会话独立 DSH agent · 复用 DSH Web GUI
 
 ## 特性
 

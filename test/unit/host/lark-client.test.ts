@@ -253,12 +253,21 @@ test("lark-client: uploadFile/uploadImage pass the Buffer through", async () => 
 		file: buf,
 	});
 	assert.equal((fk as { file_key: string }).file_key, "file.create");
-	assert.deepEqual(
-		((fake.calls["file.create"] ?? [])[0] as { data: Buffer }).data,
-		buf,
-	);
+	// SDK im.v1.file.create takes data: {file_type, file_name, file}.
+	const fc = (fake.calls["file.create"] ?? [])[0] as {
+		data: { file_type: string; file_name: string; file: Buffer };
+	};
+	assert.deepEqual(fc.data.file, buf);
+	assert.equal(fc.data.file_type, "file");
+	assert.equal(fc.data.file_name, "x.txt");
 	const ik = await client.uploadImage!({ image: buf });
 	assert.equal((ik as { image_key: string }).image_key, "image.create");
+	// SDK im.v1.image.create takes data: {image_type, image}.
+	const ic = (fake.calls["image.create"] ?? [])[0] as {
+		data: { image_type: string; image: Buffer };
+	};
+	assert.equal(ic.data.image_type, "message");
+	assert.deepEqual(ic.data.image, buf);
 });
 
 test("lark-client: domain=lark selects SDK Domain.Lark", async () => {

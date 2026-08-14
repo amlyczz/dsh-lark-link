@@ -925,7 +925,12 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					required: true,
 					description: "Absolute local path",
 				},
-				kind: { type: "string", required: true, description: "image | file" },
+				kind: {
+					type: "string",
+					required: true,
+					description:
+						"image（png/jpeg/webp/gif，其他格式如 svg 自动按 file 发送）| file",
+				},
 				caption: { type: "string", description: "Optional caption text" },
 			},
 			output: {
@@ -933,9 +938,18 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				render: (_args, value) => [{ type: "text", text: value as string }],
 			},
 			async execute(args, exec) {
-				const abs = resolve(args.path);
-				const cwd = process.cwd();
-				if (!abs.startsWith(cwd)) return "拒绝: 路径不在工作区内";
+				// The agent's workspace is config.workspaceRoot (may differ from
+				// the dsh process cwd after /workspace) — resolve relative paths
+				// against it and whitelist it. Using process.cwd() wrongly
+				// rejects files the agent just created in its workspace.
+				const workspaceRoot = getCfg().workspaceRoot || process.cwd();
+				const abs = resolve(
+					args.path.startsWith("/")
+						? args.path
+						: join(workspaceRoot, args.path),
+				);
+				if (!abs.startsWith(workspaceRoot))
+					return "拒绝: 路径不在工作区内";
 				// Resolve the requesting conversation: exec.agent.id is the bridge
 				// session id (lark-link:dm:ou_x:nonce). The session id carries the
 				// per-run nonce suffix while route keys do not — prefer the backend
@@ -952,7 +966,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				if (!route) return "错误: 无法定位当前飞书会话";
 				const client = getLarkClient();
 				if (!client) return "错误: lark 客户端未就绪";
-				const isImage = args.kind === "image";
+				// Feishu image upload only accepts raster formats — non-raster
+				// (svg etc.) falls back to file upload regardless of kind.
+				const IMAGE_EXT = /\.(png|jpe?g|webp|gif)$/i;
+				const isImage = args.kind === "image" && IMAGE_EXT.test(args.path);
 				if (isImage ? !client.uploadImage : !client.uploadFile)
 					return "错误: lark 客户端未就绪";
 				let buf: Buffer;

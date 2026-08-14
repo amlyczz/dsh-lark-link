@@ -272,14 +272,22 @@ export async function buildLarkClient(
 				file_name?: string;
 				file: Buffer;
 			};
+			// SDK im.v1.file.create expects data: {file_type, file_name, file}
+			// (multipart) — passing a bare Buffer 400s (code 9499).
 			return sdkClient.im.file.create({
-				params: { file_type: p.file_type },
-				data: p.file,
+				data: {
+					file_type: p.file_type,
+					file_name: p.file_name ?? "file",
+					file: p.file,
+				},
 			}) as Promise<{ file_key?: string } | { data?: { file_key?: string } }>;
 		},
 		async uploadImage(params) {
 			const p = params as { image: Buffer };
-			return sdkClient.im.image.create({ data: p.image }) as Promise<
+			// SDK im.v1.image.create expects data: {image_type, image}.
+			return sdkClient.im.image.create({
+				data: { image_type: "message", image: p.image },
+			}) as Promise<
 				{ image_key?: string } | { data?: { image_key?: string } }
 			>;
 		},
