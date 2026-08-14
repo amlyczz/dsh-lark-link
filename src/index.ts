@@ -678,37 +678,31 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					| undefined;
 				const current = adm?.currentSelection?.();
 				if (!arg) {
-					// Picker card: one button per model (single-select, no typing).
-					const models: Array<{
+					// Picker card grouped by provider (single-select, no typing).
+					const groups: Array<{
 						provider: string;
-						id: string;
-						name?: string;
+						label?: string;
+						models: Array<{ id: string; name?: string }>;
 					}> = [];
 					const providers = llm?.listProviders?.() ?? [];
 					for (const p of providers) {
+						let models: Array<{ id: string; name?: string }> = [];
 						try {
-							for (const m of (await llm?.listModels?.(p.id ?? "")) ??
-								[]) {
-								models.push({
-									provider: p.id ?? "",
-									id: m.id,
-									name: m.name,
-								});
-							}
+							models = (await llm?.listModels?.(p.id ?? "")) ?? [];
 						} catch {
 							// adapter without a catalog — skip
+						}
+						if (models.length > 0) {
+							groups.push({
+								provider: p.id ?? "",
+								label: p.name ?? p.id,
+								models,
+							});
 						}
 					}
 					await sender.sendCard(
 						msg.chatId,
-						withButtons(
-							modelCard(current, models),
-							models.map((m) =>
-								button(m.id, {
-									op: `model:${m.provider}/${m.id}`,
-								}),
-							),
-						),
+						modelCard(current, groups),
 					);
 					return true;
 				}

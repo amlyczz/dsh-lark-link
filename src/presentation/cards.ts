@@ -116,22 +116,59 @@ export function modeCard(current?: string): unknown {
 	};
 }
 
-/** Single-select model picker card (buttons per model). */
+/** Model picker card grouped by provider: provider header + one button per model. */
 export function modelCard(
 	current: { provider?: string; model?: string } | undefined,
-	models: ReadonlyArray<{ provider: string; id: string; name?: string }>,
+	groups: ReadonlyArray<{
+		provider: string;
+		label?: string;
+		models: ReadonlyArray<{ id: string; name?: string }>;
+	}>,
 ): unknown {
-	const lines = [
-		`**当前模型**: ${current?.provider ?? "?"}/${current?.model ?? "未设置"}`,
-		"",
-		"**可选模型**（单选，点按钮即切换，下条消息生效）",
-		"",
-		...models.map(
-			(m) => `- ${m.id}${current?.model === m.id ? " ← 当前" : ""}`,
-		),
+	const elements: unknown[] = [
+		{
+			tag: "markdown",
+			content: `**当前模型**: ${current?.provider ?? "?"}/${current?.model ?? "未设置"}`,
+		},
+		{ tag: "markdown", content: "**按供应商选择模型**（点按钮即切换，下条消息生效）" },
 	];
-	if (models.length === 0) lines.push("（无可用模型列表）");
-	return markdownCard(lines.join("\n"), { header: "切换模型", accent: true });
+	let first = true;
+	for (const g of groups) {
+		if (g.models.length === 0) continue;
+		if (!first) elements.push({ tag: "hr" });
+		first = false;
+		elements.push({
+			tag: "markdown",
+			content: `**${g.label ?? g.provider}**`,
+		});
+		for (const m of g.models) {
+			elements.push({
+				tag: "button",
+				width: "fill",
+				text: { tag: "plain_text", content: m.name ?? m.id },
+				behaviors: [
+					{
+						type: "callback",
+						value: { op: `model:${g.provider}/${m.id}` },
+					},
+				],
+			});
+		}
+	}
+	if (first) {
+		elements.push({
+			tag: "markdown",
+			content: "（无可用模型列表）",
+		});
+	}
+	return {
+		schema: "2.0",
+		header: {
+			title: { tag: "plain_text", content: "切换模型" },
+			template: "blue",
+		},
+		body: { elements },
+	};
 }
 
 /** Single-select permission picker card. */
