@@ -51,6 +51,7 @@ const BRIDGE_COMMANDS = new Set([
 	"model",
 	"mode",
 	"permission",
+	"new",
 ]);
 
 export function createCommandRouter(deps: CommandRouterDeps): CommandRouter {

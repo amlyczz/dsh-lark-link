@@ -41,7 +41,7 @@ import {
 	statusDetailLines,
 } from "./application/status-formatter.ts";
 import { createStatusStore } from "./common/connection-status.ts";
-import { createConfigStore } from "./common/config.ts";
+import { createConfigStore, HOT_RELOADABLE } from "./common/config.ts";
 import { createLogger, type Logger } from "./common/logger.ts";
 import { createDedupeStore } from "./common/dedupe-store.ts";
 import { createQuotaGovernor } from "./common/quota-governor.ts";
@@ -510,8 +510,6 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	): Promise<boolean> => {
 		switch (name) {
 			case "status":
-			case "feishu-config":
-			case "lark-config":
 				await sender.replyTo(
 					msg,
 					formatStatusLine(status.get()) +
@@ -519,6 +517,56 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						statusDetailLines(status.get()).join("\n"),
 				);
 				return true;
+			case "feishu-config":
+			case "lark-config": {
+				// /lark-config key=value — hot reload (no value shows status).
+				const arg = _rawInput.trim();
+				if (!arg) {
+					await sender.replyTo(
+						msg,
+						formatStatusLine(status.get()) +
+							"\n\n" +
+							statusDetailLines(status.get()).join("\n"),
+					);
+					return true;
+				}
+				const eq = arg.indexOf("=");
+				if (eq === -1) {
+					await sender.replyTo(
+						msg,
+						"用法：/lark-config key=value（可热改: " +
+							HOT_RELOADABLE.join(", ") +
+							"）",
+					);
+					return true;
+				}
+				const key = arg.slice(0, eq).trim();
+				const rawVal = arg.slice(eq + 1).trim();
+				if (!HOT_RELOADABLE.includes(key as never)) {
+					await sender.replyTo(
+						msg,
+						`"${key}" 不可热改（可改: ${HOT_RELOADABLE.join(", ")}）`,
+					);
+					return true;
+				}
+				// Type-coerce: booleans and numbers stay typed for config.
+				let val: unknown = rawVal;
+				if (rawVal === "true" || rawVal === "false") val = rawVal === "true";
+				else if (rawVal !== "" && !Number.isNaN(Number(rawVal)))
+					val = Number(rawVal);
+				try {
+					configStore.update({ [key]: val } as never);
+					configStore.saveOverrides();
+				} catch (err) {
+					await sender.replyTo(
+						msg,
+						`更新失败: ${err instanceof Error ? err.message : String(err)}`,
+					);
+					return true;
+				}
+				await sender.replyTo(msg, `已更新 ${key}=${JSON.stringify(val)}`);
+				return true;
+			}
 			case "support":
 			case "doctor": {
 				// pi design: the diagnostic bundle comes back as a FILE. The
@@ -645,6 +693,18 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				const key = bridge.conversationKeyFor(msg);
 				await bridge.conversations?.stop(key);
 				await sender.replyTo(msg, "已停止当前会话任务");
+				return true;
+			}
+			case "new": {
+				// /new — start a fresh conversation in the current workspace:
+				// bump the session generation and dispose the agent so the next
+				// message opens a NEW session row (never forwarded to the model).
+				const key = bridge.conversationKeyFor(msg);
+				await conversations?.rotate(key);
+				await sender.replyTo(
+					msg,
+					`已开启新会话（工作区: ${getCfg().workspaceRoot || process.cwd()}）。下一条消息开始全新上下文。`,
+				);
 				return true;
 			}
 			case "model": {

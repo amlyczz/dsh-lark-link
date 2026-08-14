@@ -32,6 +32,8 @@ export interface ConversationManager {
   stop(key: string): Promise<void>;
   /** Dispose one conversation's agent (next message rebuilds it under new config). */
   dispose(key: string): Promise<void>;
+  /** /new — bump session generation and dispose, so the next message starts fresh. */
+  rotate(key: string): Promise<void>;
   /** Reap idle agents; returns disposed count. */
   sweep(): number;
   size(): number;
@@ -92,6 +94,10 @@ export function createConversationManager(deps: ConversationManagerDeps): Conver
       hooks.delete(key);
       queues.delete(key);
       await deps.backend.dispose(key);
+    },
+    async rotate(key) {
+      await this.dispose(key);
+      deps.backend.rotate(key);
     },
     sweep() {
       const n = deps.backend.disposeIdle(deps.idleTtlMs);

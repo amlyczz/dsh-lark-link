@@ -122,8 +122,11 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 	const runNonce = `${Date.now().toString(36)}${Math.random()
 		.toString(36)
 		.slice(2, 6)}`;
+	// Per-key generation: /new bumps it so the next agent gets a FRESH session
+	// id (a new GUI conversation row) instead of reusing the same log.
+	const generations = new Map<string, number>();
 	const bridgeKey = (key: string): string =>
-		`${deps.sessionPrefix}:${key}:${runNonce}`;
+		`${deps.sessionPrefix}:${key}:${runNonce}:${generations.get(key) ?? 0}`;
 
 	async function ensureAgent(key: string): Promise<AgentHandle> {
 		const existing = tracked.get(key);
@@ -351,6 +354,9 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			return n;
 		},
 		size: () => tracked.size,
+		rotate(key) {
+			generations.set(key, (generations.get(key) ?? 0) + 1);
+		},
 		async dispose(key) {
 			const t = tracked.get(key);
 			if (!t) return;

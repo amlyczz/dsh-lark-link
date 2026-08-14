@@ -196,6 +196,7 @@ export function helpCard(): unknown {
       "- `/status` 桥接状态",
       "- `/mode` 切换 Agent 模式（标准/PTC/极简/创造）",
       "- `/permission` 切换权限（只读/工作区写/Full access）",
+      "- `/new` 当前工作区新起会话",
       "- `/workspace <路径>` 切换工作区（`~` 可用）",
       "- `/stop` 停止当前会话任务",
       "- `/doctor` 生成诊断包（含 session log）",

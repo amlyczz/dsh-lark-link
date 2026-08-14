@@ -59,6 +59,8 @@ export interface DshSessionBackend {
   keyForSessionId(sessionId: string): string | undefined;
   /** Dispose idle agents beyond ttl; returns disposed count. */
   disposeIdle(idleTtlMs: number): number;
+  /** Bump a conversation's session generation — next ensureAgent uses a fresh id (/new). */
+  rotate(key: string): void;
   /** Dispose one conversation's agent (mode/model/workspace switches rebuild it). */
   dispose(key: string): Promise<void>;
   /** Number of hosted agents. */
@@ -158,6 +160,7 @@ export function createMemoryDshBackend(
       return n;
     },
     size: () => agents.size,
+    rotate() {},
     async dispose(key) {
       const a = agents.get(key);
       if (a) await a.dispose();
