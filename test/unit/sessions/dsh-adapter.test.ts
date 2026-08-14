@@ -71,11 +71,15 @@ const ctxOf = (
 		},
 	}) as unknown as Parameters<typeof createDshAdapter>[0]["ctx"];
 
-function mkBackend(ctx: unknown): DshSessionBackend {
+function mkBackend(
+	ctx: unknown,
+	modelSelection?: { current: { provider: string; model: string } },
+): DshSessionBackend {
 	return createDshAdapter({
 		ctx: ctx as Parameters<typeof createDshAdapter>[0]["ctx"],
 		sessionPrefix: "lark-link",
 		logger: silentLogger,
+		modelSelection,
 	});
 }
 
@@ -87,7 +91,9 @@ test("adapter: agents.create receives agentOptions + installModelSelection setup
 			model: "deepseek-v4-flash",
 		}),
 	});
-	const backend = mkBackend(ctx);
+	const backend = mkBackend(ctx, {
+		current: { provider: "deepseek-official", model: "deepseek-v4-flash" },
+	});
 	const handle = await backend.ensureAgent("dm:ou_user_1");
 
 	assert.equal(registry.created.length, 1);

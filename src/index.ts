@@ -126,6 +126,22 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	const getCfg = (): ReturnType<typeof configStore.get> => configStore.get();
 
 	// ---- backend: real DSH adapter, falling back to the in-memory mock ------
+	// LIVE model selection shared by every agent: /model mutates this object,
+	// installModelSelection reads it per request, so switching the model does
+	// NOT rebuild/destroy the current session.
+	const liveModelSelection = { provider: "", model: "" };
+	{
+		const adm = (ctx as unknown as {
+			get?(name: string):
+				| { currentSelection?(): { provider?: string; model?: string } }
+				| undefined;
+		}).get?.("agentDefaultModel");
+		const cur = adm?.currentSelection?.();
+		if (cur?.provider && cur.model) {
+			liveModelSelection.provider = cur.provider;
+			liveModelSelection.model = cur.model;
+		}
+	}
 	let backend;
 	try {
 		backend = createDshAdapter({
@@ -137,6 +153,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				const p = getCfg().agentPreset || "code";
 				return p === "ptc" ? "code" : p; // 别名兼容
 			},
+			modelSelection: { current: liveModelSelection },
 		});
 	} catch (err) {
 		logger.warn(
@@ -796,10 +813,14 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					);
 					return true;
 				}
-				await conversations?.dispose(bridge.conversationKeyFor(msg));
+				// Update the LIVE selection — every agent's next request reads it
+				// via installModelSelection, so NO rebuild/dispose needed and the
+				// current session survives the switch.
+				liveModelSelection.provider = provider;
+				liveModelSelection.model = model;
 				await sender.replyTo(
 					msg,
-					`模型已切换: ${provider}/${model}\n当前会话已重置，下一条消息生效（其他会话不受影响）。`,
+					`模型已切换: ${provider}/${model}\n当前会话下次回复生效（会话不中断）。`,
 				);
 				return true;
 			}

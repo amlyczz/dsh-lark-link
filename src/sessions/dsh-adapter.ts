@@ -31,6 +31,12 @@ export interface DshAdapterDeps {
 	cwd?: () => string;
 	/** Agent preset id for created sessions — getter so /mode hot-swaps. */
 	preset?: () => string;
+	/**
+	 * LIVE model selection — the same mutable object for every agent, read by
+	 * installModelSelection on each request. Updating its fields switches the
+	 * model WITHOUT rebuilding the agent (the session survives /model).
+	 */
+	modelSelection?: { current: { provider: string; model: string } };
 	logger?: { info(msg: string): void; warn(msg: string): void };
 }
 
@@ -145,17 +151,8 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			// and inbound messages never get a reply.
 			// NB: read via ctx.get() — the Cordis Context proxy throws
 			// "cannot get property ... without inject" for undeclared services.
-			const defaultModel = (
-				c as unknown as {
-					get?(name: string):
-						| {
-								currentSelection(): ModelSelection | undefined;
-						  }
-						| undefined;
-				}
-			)
-				.get?.("agentDefaultModel")
-				?.currentSelection?.();
+			const sel = deps.modelSelection?.current;
+			const defaultModel = sel?.provider && sel.model ? sel : undefined;
 			const agentOptions = defaultModel
 				? {
 						provider: defaultModel.provider,
@@ -164,7 +161,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				: undefined;
 			if (!defaultModel) {
 				deps.logger?.warn(
-					`no agentDefaultModel service — bridge agent for ${key} has no provider/model; turns will fail unless one is supplied`,
+					`no model selection — bridge agent for ${key} has no provider/model; turns will fail unless one is supplied`,
 				);
 			}
 			owned = await c.agents.create({
@@ -184,9 +181,9 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				setup: async (agentCtx: Context) => {
 					// Model selection (optional — depends on the deployment
 					// agentDefaultModel service).
-					if (defaultModel) {
+					if (deps.modelSelection?.current) {
 						installModelSelection(agentCtx, {
-							current: defaultModel,
+							current: deps.modelSelection.current,
 							assembled: undefined,
 						});
 					}
