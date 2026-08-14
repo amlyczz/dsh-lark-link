@@ -87,7 +87,12 @@ export function createEventForwarder(deps: EventForwarderDeps): EventForwarder {
 
     switch (event.type) {
       case "turn/start":
-        // Watchdog arming is handled by the host (onEvent); no delivery work.
+        // New turn: reset per-turn delivery state. doneIssued/hasOutput/acc
+        // must not leak across turns — otherwise only the FIRST turn of a
+        // session ever gets its DONE reaction (pi lesson: 每轮都要打 DONE).
+        st.hasOutput = false;
+        st.doneIssued = false;
+        st.acc = "";
         break;
       case "assistant/chunk": {
         // Streaming is volatile preview only (ADR-8); the durable per-turn

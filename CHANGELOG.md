@@ -14,6 +14,8 @@
 - **修复：`lark_send_local_file` 报「无法定位当前飞书会话」**——agent.id 带每运行 nonce 后缀而 route key 不带；改用 backend.keyForSessionId 反向映射（回退剥离 nonce）
 - **修复：`/workspace <path>` 切换无效**——现持久化 `workspaceRoot` 到配置并重建会话，下一条消息在新 cwd 生效（无参显示当前工作区）
 - **入站多媒体（M6）**：飞书图片→下载→attachment store（ImageBlock，视觉模型）；文件→下载→有界文本提取。附件解析失败降级为纯文本，不丢消息
+- **修复：卡片 header 位置错误导致 `/help` 等卡片消息发送失败**——schema 2.0 的 `header` 是 body 的顶层兄弟，原实现嵌在 body 内，飞书报 ErrCode 200621；markdownCard 现把 header 放顶层
+- **修复：DONE 表情只有第一条消息有**——forwarder 的 `doneIssued/hasOutput/acc` 跨 turn 残留，`turn/start` 未重置；现每轮重置，逐条消息都打 DONE（空输出仍不打）
 - **修复：回复不渲染 markdown**——sendText 现自动检测 markdown 内容（标题/列表/代码块/表格/粗体）并改为 CardKit 卡片（`tag:"markdown"`）发送，纯文本仍走 text 消息（对齐 pi rich-text 模式选择）
 - **修复：`/workspace ~/path` 报目录不存在**——`~` 未展开且相对路径拼到旧 cwd 前。现展开 `~`/`~/`，相对路径基于当前工作区解析
 - **修复：飞书侧 `/model` 无反应**——web profile 无 dsh-command-model 插件（GUI 的 /model 是客户端命令），Tier 2 又要求会话 agent 已存在。现桥实现 `/model`（列当前+可用模型，`/model <provider>/<model>` 切换并重建会话）；Tier 2 懒创建会话 agent（首条命令消息不再跳过 DSH 命令）

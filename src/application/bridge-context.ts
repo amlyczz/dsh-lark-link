@@ -170,10 +170,13 @@ export function createBridgeContext(deps: BridgeContextDeps): BridgeContext {
     async markDone(key, triggerMessageId) {
       if (!triggerMessageId || !deps.sender) return;
       const doneEmoji = deps.cfg().reactions.done || "DONE";
+      deps.logger.info(`markDone: ${key} -> ${triggerMessageId} (${doneEmoji})`);
       try {
         await deps.sender.addReaction(triggerMessageId, doneEmoji);
-      } catch {
-        deps.logger.warn(`markDone reaction failed for ${key}`);
+      } catch (err) {
+        deps.logger.warn(
+          `markDone reaction failed for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     },
   };

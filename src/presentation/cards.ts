@@ -47,18 +47,23 @@ export function looksLikeMarkdown(text: string): boolean {
   return false;
 }
 
-export function markdownCard(markdown: string, opts: { header?: string; accent?: boolean } = {}): unknown {
+export function markdownCard(
+  markdown: string,
+  opts: { header?: string; accent?: boolean } = {},
+): unknown {
   return {
     schema: "2.0",
-    body: {
-      header: opts.header
-        ? {
+    // schema 2.0: `header` is a TOP-LEVEL sibling of `body` — nesting it
+    // inside body fails with ErrCode 200621 "unknown property header".
+    ...(opts.header
+      ? {
+          header: {
             title: { tag: "plain_text", content: opts.header },
             template: opts.accent ? "blue" : "grey",
-          }
-        : undefined,
-      elements: [{ tag: "markdown", content: markdown }],
-    },
+          },
+        }
+      : {}),
+    body: { elements: [{ tag: "markdown", content: markdown }] },
   };
 }
 
