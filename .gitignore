@@ -24,3 +24,4 @@ Thumbs.db
 
 # research/ is private local material (surveys + cloned reference repos) — never published
 research/
+.playwright-mcp/
