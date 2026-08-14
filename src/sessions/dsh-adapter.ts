@@ -181,12 +181,6 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 							current: defaultModel,
 							assembled: undefined,
 						});
-						// Mount the "standard" preset into the agent scope —
-						// exactly what the GUI path does via apiproxy's
-						// composeAgent. Without this the web profile's host-plane
-						// tool rows stay disabled and the bridge agent has NO
-						// bash/fs/goal/subagent tools (session-log evidence:
-						// `Error: unknown tool "bash"` / "write_file" / …).
 					}
 					// Mount the "standard" preset into the agent scope —
 					// exactly what the GUI path does via apiproxy's
@@ -219,23 +213,45 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		}
 		if (!owned?.agent)
 			throw new Error(`DSH agents.create returned no agent for ${key}`);
-		// Ensure a durable workspace record exists for the session cwd —
-		// otherwise the GUI lists the session under 未分组 (workspaces are only
-		// created when a user picks one in the UI). Best-effort.
+		// Ensure a durable workspace record exists for the session cwd AND the
+		// session is attached to it — otherwise the GUI lists the session under
+		// 未分组 (workspaces are only created+attached when a user picks one in
+		// the UI). Best-effort; failures are logged, never fatal.
 		const wsCwd = deps.cwd?.() ?? process.cwd();
 		try {
 			const workspaces = (
 				c as unknown as {
-					get?(
-						name: string,
-					):
-						| { create?(path: string, title?: string): Promise<unknown> }
+					get?(name: string):
+						| {
+								create?(path: string, title?: string): Promise<{
+									attachSession?(sessionId: string): Promise<unknown>;
+								} | undefined>;
+							}
 						| undefined;
 				}
 			).get?.("workspaceRegistry");
-			await workspaces?.create?.(wsCwd, basename(wsCwd));
-		} catch {
-			// workspace registry optional / create failed — ignore
+			if (workspaces?.create) {
+				const entity = await workspaces.create(wsCwd, basename(wsCwd));
+				deps.logger?.info(
+					`workspace create: ${wsCwd} (${entity ? "entity" : "none"})`,
+				);
+				if (entity?.attachSession) {
+					await entity.attachSession(sessionId);
+					deps.logger?.info(`workspace attach: ${sessionId} -> ${wsCwd}`);
+				} else {
+					deps.logger?.warn(
+						`workspace attach skipped: entity has no attachSession (${wsCwd})`,
+					);
+				}
+			} else {
+				deps.logger?.warn(
+					`workspaceRegistry unavailable — session ${sessionId} will show under 未分组`,
+				);
+			}
+		} catch (err) {
+			deps.logger?.warn(
+				`workspace create/attach failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+			);
 		}
 		const agent = owned.agent;
 
