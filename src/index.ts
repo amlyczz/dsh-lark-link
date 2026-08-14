@@ -70,7 +70,7 @@ import {
 import * as qrcode from "qrcode-terminal";
 import QRCode from "qrcode";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve, basename } from "node:path";
+import { join, resolve } from "node:path";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -82,7 +82,6 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { readFileSync as rf, writeFileSync as wf } from "node:fs";
 import type { FeishuInboundMessage } from "./common/types.ts";
 
 export const name = "dsh-lark-link";
@@ -133,36 +132,32 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	// NOT rebuild/destroy the current session.
 	const liveModelSelection = { provider: "", model: "" };
 	{
-		const adm = (ctx as unknown as {
-			get?(name: string):
-				| { currentSelection?(): { provider?: string; model?: string } }
-				| undefined;
-		}).get?.("agentDefaultModel");
+		const adm = (
+			ctx as unknown as {
+				get?(
+					name: string,
+				):
+					| { currentSelection?(): { provider?: string; model?: string } }
+					| undefined;
+			}
+		).get?.("agentDefaultModel");
 		const cur = adm?.currentSelection?.();
 		if (cur?.provider && cur.model) {
 			liveModelSelection.provider = cur.provider;
 			liveModelSelection.model = cur.model;
 		}
 	}
-	// Stable per-deployment nonce — persisted so bridge session ids survive
-	// dsh restarts (otherwise every reload opens a new GUI session row).
-	const nonceFile = join(dir, "nonce");
-	let runNonce = "";
-	try {
-		runNonce = rf(nonceFile, "utf8").trim();
-	} catch {
-		// first run
-	}
-	if (!runNonce) {
-		runNonce = `${Date.now().toString(36)}${Math.random()
-			.toString(36)
-			.slice(2, 6)}`;
-		try {
-			wf(nonceFile, runNonce, { mode: 0o600 });
-		} catch {
-			// best effort
-		}
-	}
+	// Fresh per-run nonce — NEVER persisted. (352af88 persisted it so bridge
+	// session ids survive restarts, but that makes a restarted bridge reuse a
+	// session id whose on-disk log does not match the live session, and
+	// dsh-agent-loop's resume/create then fail the first turn with "already
+	// has a persisted log on disk that does not match this live session (id
+	// collision)". A fresh nonce per run means create never collides and the
+	// bridge always boots clean; the GUI gets a new conversation row per
+	// restart, which is the correct trade-off for a reliable bridge.)
+	const runNonce = `${Date.now().toString(36)}${Math.random()
+		.toString(36)
+		.slice(2, 6)}`;
 	let backend: ReturnType<typeof createDshAdapter> | undefined;
 	try {
 		backend = createDshAdapter({
@@ -505,7 +500,9 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			multiSelect?: boolean;
 		}>,
 		agentId: string,
-	): Promise<{ answers: Array<{ id: string; selected: string[]; custom?: string }> }> {
+	): Promise<{
+		answers: Array<{ id: string; selected: string[]; custom?: string }>;
+	}> {
 		// One card per question, answered serially (multi-question is rare).
 		const answers: Array<{
 			id: string;
@@ -542,18 +539,16 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					timer,
 					options: q.options ?? [],
 				});
-				void sender
-					.sendCard(chatId, questionCard(q))
-					.catch((err) => {
-						clearTimeout(timer);
-						pendingQuestions.delete(q.id);
-						resolve({
-							id: q.id,
-							selected: [
-								`(卡片发送失败: ${err instanceof Error ? err.message : String(err)})`,
-							],
-						});
+				void sender.sendCard(chatId, questionCard(q)).catch((err) => {
+					clearTimeout(timer);
+					pendingQuestions.delete(q.id);
+					resolve({
+						id: q.id,
+						selected: [
+							`(卡片发送失败: ${err instanceof Error ? err.message : String(err)})`,
+						],
 					});
+				});
 			});
 			answers.push(answer);
 		}
@@ -881,10 +876,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 							});
 						}
 					}
-					await sender.sendCard(
-						msg.chatId,
-						modelCard(current, groups),
-					);
+					await sender.sendCard(msg.chatId, modelCard(current, groups));
 					return true;
 				}
 				// Switch: accept provider/model or bare model id (same provider).
@@ -934,9 +926,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						msg.chatId,
 						withButtons(
 							modeCard(getCfg().agentPreset),
-							AGENT_PRESETS.map((p) =>
-								button(p.label, { op: `mode:${p.id}` }),
-							),
+							AGENT_PRESETS.map((p) => button(p.label, { op: `mode:${p.id}` })),
 						),
 					);
 					return true;
@@ -990,9 +980,11 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						bridge.conversationKeyFor(msg),
 					)?.sessionId;
 					const agent = sessionId
-						? ((services.get?.("agents") as {
-								get?(id: string): { session: unknown };
-							})?.get?.(sessionId))
+						? (
+								services.get?.("agents") as {
+									get?(id: string): { session: unknown };
+								}
+							)?.get?.(sessionId)
 						: undefined;
 					const permission = services.get?.("permissionPresets") as
 						| {
@@ -1053,8 +1045,8 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			const chatId =
 				(raw as { context?: { open_chat_id?: string } }).context
 					?.open_chat_id ??
-				(raw as { operator?: { operator_id?: { open_id?: string } } })
-					.operator?.operator_id?.open_id ??
+				(raw as { operator?: { operator_id?: { open_id?: string } } }).operator
+					?.operator_id?.open_id ??
 				raw.open_id ??
 				"";
 			const messageId = raw.message?.message_id ?? "";
@@ -1070,8 +1062,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					clearTimeout(pending.timer);
 					pendingQuestions.delete(questionId);
 					const label =
-						pending.options[optionIndex]?.label ??
-						String(optionIndex);
+						pending.options[optionIndex]?.label ?? String(optionIndex);
 					void sender
 						.sendText(pending.chatId, `已收到你的选择 ✅（${label}）`)
 						.catch(() => undefined);
@@ -1116,6 +1107,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		backend,
 		maxSessions: getCfg().maxSessions,
 		idleTtlMs: getCfg().sessionIdleTtlMs,
+		logger,
 		onEvent: (key, event) => {
 			void forwarder
 				.onSessionEvent(key, event)
@@ -1294,8 +1286,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						? args.path
 						: join(workspaceRoot, args.path),
 				);
-				if (!abs.startsWith(workspaceRoot))
-					return "拒绝: 路径不在工作区内";
+				if (!abs.startsWith(workspaceRoot)) return "拒绝: 路径不在工作区内";
 				// Resolve the requesting conversation: exec.agent.id is the bridge
 				// session id (lark-link:dm:ou_x:nonce). The session id carries the
 				// per-run nonce suffix while route keys do not — prefer the backend
@@ -1441,7 +1432,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	const findSessionLog = (
 		sessionId: string,
 	): { zstd: string; jsonl: string } | undefined => {
-		const sessionsRoot = join(process.env.DSH_HOME ?? join(homedir(), ".dsh"), "sessions");
+		const sessionsRoot = join(
+			process.env.DSH_HOME ?? join(homedir(), ".dsh"),
+			"sessions",
+		);
 		if (!existsSync(sessionsRoot)) return undefined;
 		const encoded = sessionId.replace(/:/g, "~003A");
 		for (const wsDir of readdirSync(sessionsRoot)) {
@@ -1464,9 +1458,13 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		try {
 			// Decompress the zstd session log to plain JSONL (aligns with the
 			// GUI "Session log" export).
-			execFileSync("unzstd", ["-f", "-q", zstdPath, "-o", join(dir, "session.jsonl")], {
-				stdio: "ignore",
-			});
+			execFileSync(
+				"unzstd",
+				["-f", "-q", zstdPath, "-o", join(dir, "session.jsonl")],
+				{
+					stdio: "ignore",
+				},
+			);
 			writeFileSync(
 				join(dir, "ISSUE.md"),
 				`# dsh-lark-link 诊断包
@@ -1489,7 +1487,10 @@ ${issueMd}
 				"utf8",
 			);
 			const zipPath = join(tmpdir(), `lark-link-doctor-${Date.now()}.zip`);
-			execFileSync("zip", ["-q", "-r", zipPath, "."], { cwd: dir, stdio: "ignore" });
+			execFileSync("zip", ["-q", "-r", zipPath, "."], {
+				cwd: dir,
+				stdio: "ignore",
+			});
 			return readFileSync(zipPath);
 		} catch {
 			return undefined;

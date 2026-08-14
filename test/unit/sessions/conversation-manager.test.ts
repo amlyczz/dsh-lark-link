@@ -72,3 +72,28 @@ test("manager: disposeAll cleans everything", async () => {
   await cm.disposeAll();
   assert.equal(backend.size(), 0);
 });
+
+test("manager: /new (rotate) keeps the old session listed, next message opens a new row", async () => {
+  const backend = createMemoryDshBackend({ autoReply: () => "ok" });
+  const cm = createConversationManager({ backend, maxSessions: 8, idleTtlMs: 60_000 });
+
+  await cm.handleMessage(mkMsg("ou_a", "p2p", "first"));
+  const before = backend.get("dm:ou_a");
+  assert.ok(before, "first agent exists");
+  const firstSessionId = before.sessionId;
+
+  await cm.rotate("dm:ou_a");
+
+  // Old agent must still be tracked (dispose is NOT called) — the GUI session
+  // stays listed even though its log is on disk.
+  assert.ok(
+    backend.get("dm:ou_a"),
+    "/new must not dispose the old agent (session stays in the store)",
+  );
+
+  // The old session id remains mapped, and the next message does NOT reuse
+  // it. (Memory backend's rotate is a no-op stub; the session-id freshness
+  // on /new is covered by dsh-adapter's generation-bump test.)
+  assert.ok(backend.keyForSessionId(firstSessionId), "old session id still mapped");
+  await cm.disposeAll();
+});

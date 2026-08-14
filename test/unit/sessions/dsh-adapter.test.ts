@@ -15,6 +15,7 @@ function fakeRegistry(
 	opts: { onEvent?: (agent: unknown, ev: unknown) => void } = {},
 ) {
 	const created: Array<Record<string, unknown>> = [];
+	const resumed: Array<Record<string, unknown>> = [];
 	const agentNo = { n: 0 };
 	const agents = new Map<string, unknown>();
 	const makeAgent = (sessionId: string) => {
@@ -41,8 +42,12 @@ function fakeRegistry(
 	};
 	const registry = {
 		created,
+		resumed,
 		agents,
 		async create(createOpts: { sessionId: string }) {
+			if (agents.has(createOpts.sessionId)) {
+				throw new Error(`session "${createOpts.sessionId}" already exists`);
+			}
 			created.push(createOpts);
 			const agent = makeAgent(createOpts.sessionId);
 			agents.set(createOpts.sessionId, agent);
@@ -52,11 +57,23 @@ function fakeRegistry(
 				dispose: async () => agents.delete(createOpts.sessionId),
 			};
 		},
+		async resume(resumeOpts: { resumeSessionId: string }) {
+			resumed.push(resumeOpts);
+			const agent = makeAgent(resumeOpts.resumeSessionId);
+			// resume re-mounts the persisted session; the agent id follows the
+			// session id (same as create) — the store already knows this session.
+			agents.set(resumeOpts.resumeSessionId, agent);
+			agentNo.n++;
+			return {
+				agent,
+				dispose: async () => agents.delete(resumeOpts.resumeSessionId),
+			};
+		},
 		get(id: string) {
 			return agents.get(id);
 		},
 	};
-	return registry;
+	return { ...registry, created, resumed };
 }
 
 const ctxOf = (
@@ -74,12 +91,14 @@ const ctxOf = (
 function mkBackend(
 	ctx: unknown,
 	modelSelection?: { current: { provider: string; model: string } },
+	runNonce?: string,
 ): DshSessionBackend {
 	return createDshAdapter({
 		ctx: ctx as Parameters<typeof createDshAdapter>[0]["ctx"],
 		sessionPrefix: "lark-link",
 		logger: silentLogger,
 		modelSelection,
+		runNonce,
 	});
 }
 
@@ -183,4 +202,73 @@ test("adapter: assistant/message text is extracted from content blocks", async (
 	const msg = events.find((e) => e.type === "assistant/message");
 	assert.ok(msg, "assistant/message forwarded");
 	assert.equal(msg.text, "hi there");
+});
+
+test("adapter: create collision on restart mints a fresh session automatically", async () => {
+	const registry = fakeRegistry();
+	const ctx = ctxOf(registry, undefined);
+	const NONCE = "r1abc123";
+	const backend = mkBackend(ctx, undefined, NONCE);
+
+	// First ensureAgent creates the session. The registry's create now throws
+	// "already exists" when the id is taken (same as the real DSH session
+	// store after a restart that reused the persisted runNonce).
+	const first = await backend.ensureAgent("dm:ou_user_1");
+	assert.equal(registry.created.length, 1);
+
+	// Force a fresh adapter over the same persisted runNonce — this mirrors
+	// the dsh restart: `tracked` is empty, DSH store still holds the session.
+	const backend2 = mkBackend(ctx, undefined, NONCE);
+	const handle = await backend2.ensureAgent("dm:ou_user_1");
+
+	// The collided id was NOT reused and resume was NOT attempted (it is
+	// broken for mismatched logs) — a fresh session was minted instead, so
+	// the message is never dropped.
+	assert.equal(registry.resumed.length, 0, "resume must NOT be attempted");
+	assert.equal(registry.created.length, 2, "original + fresh restart create");
+	assert.notEqual(handle.sessionId, first.sessionId, "fresh session after restart");
+	assert.notEqual(handle.agentId, first.agentId, "fresh agent after restart");
+});
+
+test("adapter: create collision mints a fresh session directly (no resume)", async () => {
+	const registry = fakeRegistry();
+	// Even if resume EXISTS, the adapter must NOT use it: dsh-agent-loop's
+	// resume returns success but fails on first turn (lazy id-collision
+	// check). We assert resume is never attempted.
+	const ctx = ctxOf(registry, undefined);
+	// Pre-seed the persisted session under the same runNonce the backend
+	// will mint — the very first ensureAgent must hit the collision and
+	// mint a FRESH session instead.
+	const NONCE = "r2def456";
+	const collidedId = `lark-link:dm:ou_user_1:${NONCE}:0`;
+	registry.agents.set(collidedId, {});
+	const backend = mkBackend(ctx, undefined, NONCE);
+
+	const handle = await backend.ensureAgent("dm:ou_user_1");
+
+	// Fresh create succeeded with a NEW nonce — the collided id is not
+	// reused, resume was never attempted, and the message is not dropped.
+	assert.equal(registry.resumed.length, 0, "resume must NOT be attempted");
+	assert.equal(registry.created.length, 1, "only the fresh create records");
+	assert.notEqual(handle.sessionId, collidedId, "fresh session id, not the collided one");
+});
+
+test("adapter: /new (rotate) bumps generation — next agent gets a fresh session id", async () => {
+	const registry = fakeRegistry();
+	const ctx = ctxOf(registry, undefined);
+	const backend = mkBackend(ctx, undefined, "r3abc789");
+
+	const first = await backend.ensureAgent("dm:ou_user_1");
+	backend.rotate("dm:ou_user_1");
+	const second = await backend.ensureAgent("dm:ou_user_1");
+
+	assert.notEqual(
+		second.sessionId,
+		first.sessionId,
+		"/new gives the next agent a different session id (new generation)",
+	);
+	assert.ok(
+		second.sessionId.endsWith(":1"),
+		"generation 1 suffix on the new session id",
+	);
 });

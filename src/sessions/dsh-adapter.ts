@@ -13,7 +13,7 @@
 import { basename } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
-import type { Agent, ModelSelection } from "@deepseek-ai/dsh-agent";
+import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
@@ -150,7 +150,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 	// keyBySession/route mapping stays consistent) but unique across runs, so
 	// agents.create never collides with a persisted log from a previous run.
 	// (Cross-restart history needs seed-based resume — follow-up.)
-	const runNonce =
+	let runNonce =
 		deps.runNonce ??
 		`${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 	// Per-key generation: /new bumps it so the next agent gets a FRESH session
@@ -166,29 +166,186 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			return existing.handle;
 		}
 
-		const sessionId = bridgeKey(key);
+		let sessionId = bridgeKey(key);
 		let owned: AgentHandleSurface;
-		try {
-			// The bridge creates raw agents, so — like dsh-headless — it must
-			// carry the deployment default model (agentDefaultModel service) into
-			// CreateAgentOptions and wire the request-waterfall selection.
-			// Without this every turn fails with "agent has no provider/model"
-			// and inbound messages never get a reply.
-			// NB: read via ctx.get() — the Cordis Context proxy throws
-			// "cannot get property ... without inject" for undeclared services.
-			const sel = deps.modelSelection?.current;
-			const defaultModel = sel?.provider && sel.model ? sel : undefined;
-			const agentOptions = defaultModel
-				? {
-						provider: defaultModel.provider,
-						model: defaultModel.model,
-					}
-				: undefined;
-			if (!defaultModel) {
-				deps.logger?.warn(
-					`no model selection — bridge agent for ${key} has no provider/model; turns will fail unless one is supplied`,
-				);
+		// The bridge creates raw agents, so — like dsh-headless — it must
+		// carry the deployment default model (agentDefaultModel service) into
+		// CreateAgentOptions and wire the request-waterfall selection.
+		// Without this every turn fails with "agent has no provider/model"
+		// and inbound messages never get a reply.
+		// NB: read via ctx.get() — the Cordis Context proxy throws
+		// "cannot get property ... without inject" for undeclared services.
+		const sel = deps.modelSelection?.current;
+		const defaultModel = sel?.provider && sel.model ? sel : undefined;
+		const agentOptions = defaultModel
+			? {
+					provider: defaultModel.provider,
+					model: defaultModel.model,
+				}
+			: undefined;
+		if (!defaultModel) {
+			deps.logger?.warn(
+				`no model selection — bridge agent for ${key} has no provider/model; turns will fail unless one is supplied`,
+			);
+		}
+		// Shared composition for both create and resume (see the already-exists
+		// fallback in the catch below): model selection, agent preset mount,
+		// and the ask_user_question shadow tool must exist on a resumed agent
+		// exactly as on a freshly created one.
+		const setup = async (agentCtx: Context) => {
+			// Model selection (optional — depends on the deployment
+			// agentDefaultModel service).
+			if (deps.modelSelection?.current) {
+				installModelSelection(agentCtx, {
+					current: deps.modelSelection.current,
+					assembled: undefined,
+				});
 			}
+			// Mount the "standard" preset into the agent scope —
+			// exactly what the GUI path does via apiproxy's
+			// composeAgent. Without this the web profile's host-plane
+			// tool rows stay disabled and the bridge agent has NO
+			// bash/fs/goal/subagent tools (session-log evidence:
+			// `Error: unknown tool "bash"` / "write_file" / …).
+			const presets = (
+				c as unknown as {
+					get?(name: string):
+						| {
+								mount?(agentCtx: Context, presetId: string): Promise<unknown>;
+						  }
+						| undefined;
+				}
+			).get?.("agentPresets");
+			if (presets?.mount) {
+				await presets.mount(agentCtx, deps.preset?.() ?? "ptc");
+			}
+			// Shadow ask_user_question: forward DSH intent-confirmation
+			// questions to Feishu cards instead of the GUI-only provider.
+			if (deps.askUserQuestion) {
+				const askTool = defineTool({
+					name: "ask_user_question",
+					description:
+						"Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. Send one or more questions, each with a stable id that will be echoed in the answer.",
+					parameters: {
+						questions: {
+							type: "array",
+							required: true,
+							description: "Questions to ask the user before continuing.",
+							items: {
+								type: "object",
+								additionalProperties: true,
+								properties: {
+									id: {
+										type: "string",
+										required: true,
+										description:
+											"Stable id for this question; echoed in the answer.",
+									},
+									question: {
+										type: "string",
+										required: true,
+										description: "The specific question to ask the user.",
+									},
+									header: {
+										type: "string",
+										description: "Optional short heading for the question.",
+									},
+									options: {
+										type: "array",
+										description: "Optional choices to show the user.",
+										items: {
+											type: "object",
+											additionalProperties: true,
+											properties: {
+												label: {
+													type: "string",
+													required: true,
+													description: "Short user-facing option label.",
+												},
+												description: {
+													type: "string",
+													description:
+														"One sentence explaining the tradeoff or impact.",
+												},
+											},
+										},
+									},
+									multi_select: {
+										type: "boolean",
+										description:
+											"Whether the user may select more than one option. Defaults to false.",
+									},
+								},
+							},
+						},
+					},
+					output: {
+						schema: {
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								answers: {
+									type: "array",
+									required: true,
+									items: {
+										type: "object",
+										additionalProperties: false,
+										properties: {
+											id: {
+												type: "string",
+												required: true,
+											},
+											selected: {
+												type: "array",
+												required: true,
+												items: { type: "string" },
+											},
+											custom: { type: "string" },
+										},
+									},
+								},
+							},
+						},
+						render: (_args, value) => [
+							{ type: "text", text: JSON.stringify(value) },
+						],
+					},
+					async execute(args, exec) {
+						if (!deps.askUserQuestion) return { answers: [] };
+						const questions = (args.questions ?? []).map(
+							(q: {
+								id: string;
+								question: string;
+								header?: string;
+								options?: Array<{
+									label: string;
+									description?: string;
+								}>;
+								multi_select?: boolean;
+							}) => ({
+								id: q.id,
+								question: q.question,
+								...(q.header !== undefined ? { header: q.header } : {}),
+								...(q.options !== undefined ? { options: q.options } : {}),
+								...(q.multi_select !== undefined
+									? { multiSelect: q.multi_select }
+									: {}),
+							}),
+						);
+						const agentId =
+							(exec as { agent?: { id?: string } }).agent?.id ?? "";
+						return deps.askUserQuestion(questions, agentId);
+					},
+				});
+				(
+					agentCtx as unknown as {
+						tools?: { register?(t: unknown): unknown };
+					}
+				).tools?.register?.(askTool);
+			}
+			return undefined; // void — disposer is agentCtx-scoped
+		};
+		try {
 			owned = await c.agents.create({
 				sessionId,
 				// cwd is REQUIRED: prompt sections like deployment:persona interpolate
@@ -197,182 +354,54 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				// agentPreset: the web profile disables tool rows at the host plane
 				// and mounts them per-session via presets — without "standard" the
 				// bridge agent has NO bash/fs/goal/subagent tools (session-log
-				// evidence: `Error: unknown tool "bash"` / "write_file" / …).
+				// evidence: `Error: unknown tool \"bash\"` / "write_file" / …).
 				meta: {
 					cwd: deps.cwd?.() ?? process.cwd(),
 					agentPreset: deps.preset?.() ?? "ptc",
 				},
 				...(agentOptions ? { agentOptions } : {}),
-				setup: async (agentCtx: Context) => {
-					// Model selection (optional — depends on the deployment
-					// agentDefaultModel service).
-					if (deps.modelSelection?.current) {
-						installModelSelection(agentCtx, {
-							current: deps.modelSelection.current,
-							assembled: undefined,
-						});
-					}
-					// Mount the "standard" preset into the agent scope —
-					// exactly what the GUI path does via apiproxy's
-					// composeAgent. Without this the web profile's host-plane
-					// tool rows stay disabled and the bridge agent has NO
-					// bash/fs/goal/subagent tools (session-log evidence:
-					// `Error: unknown tool "bash"` / "write_file" / …).
-					const presets = (
-						c as unknown as {
-							get?(name: string):
-								| {
-										mount?(
-											agentCtx: Context,
-											presetId: string,
-										): Promise<unknown>;
-								  }
-								| undefined;
-						}
-					).get?.("agentPresets");
-					if (presets?.mount) {
-						await presets.mount(agentCtx, deps.preset?.() ?? "ptc");
-					}
-					// Shadow ask_user_question: forward DSH intent-confirmation
-					// questions to Feishu cards instead of the GUI-only provider.
-					if (deps.askUserQuestion) {
-						const askTool = defineTool({
-							name: "ask_user_question",
-							description:
-								"Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. Send one or more questions, each with a stable id that will be echoed in the answer.",
-							parameters: {
-								questions: {
-									type: "array",
-									required: true,
-									description:
-										"Questions to ask the user before continuing.",
-									items: {
-										type: "object",
-										additionalProperties: true,
-										properties: {
-											id: {
-												type: "string",
-												required: true,
-												description:
-													"Stable id for this question; echoed in the answer.",
-											},
-											question: {
-												type: "string",
-												required: true,
-												description:
-													"The specific question to ask the user.",
-											},
-											header: {
-												type: "string",
-												description:
-													"Optional short heading for the question.",
-											},
-											options: {
-												type: "array",
-												description:
-													"Optional choices to show the user.",
-												items: {
-													type: "object",
-													additionalProperties: true,
-													properties: {
-														label: {
-															type: "string",
-															required: true,
-															description:
-																"Short user-facing option label.",
-														},
-														description: {
-															type: "string",
-															description:
-																"One sentence explaining the tradeoff or impact.",
-														},
-													},
-												},
-											},
-											multi_select: {
-												type: "boolean",
-												description:
-													"Whether the user may select more than one option. Defaults to false.",
-											},
-										},
-									},
-								},
-							},
-							output: {
-								schema: {
-									type: "object",
-									additionalProperties: false,
-									properties: {
-										answers: {
-											type: "array",
-											required: true,
-											items: {
-												type: "object",
-												additionalProperties: false,
-												properties: {
-													id: {
-														type: "string",
-														required: true,
-													},
-													selected: {
-														type: "array",
-														required: true,
-														items: { type: "string" },
-													},
-													custom: { type: "string" },
-												},
-											},
-										},
-									},
-								},
-								render: (_args, value) => [
-									{ type: "text", text: JSON.stringify(value) },
-								],
-							},
-							async execute(args, exec) {
-								if (!deps.askUserQuestion)
-									return { answers: [] };
-								const questions = (args.questions ?? []).map(
-									(q: {
-										id: string;
-										question: string;
-										header?: string;
-										options?: Array<{
-											label: string;
-											description?: string;
-										}>;
-										multi_select?: boolean;
-									}) => ({
-										id: q.id,
-										question: q.question,
-										...(q.header !== undefined
-											? { header: q.header }
-											: {}),
-										...(q.options !== undefined
-											? { options: q.options }
-											: {}),
-										...(q.multi_select !== undefined
-											? { multiSelect: q.multi_select }
-											: {}),
-									}),
-								);
-								const agentId =
-									(exec as { agent?: { id?: string } }).agent
-										?.id ?? "";
-								return deps.askUserQuestion(questions, agentId);
-							},
-						});
-						(agentCtx as unknown as {
-							tools?: { register?(t: unknown): unknown };
-						}).tools?.register?.(askTool);
-					}
-					return undefined; // void — disposer is agentCtx-scoped
-				},
+				setup,
 			});
 		} catch (err) {
-			throw new Error(
-				`failed to create DSH agent for ${key}: ${err instanceof Error ? err.message : String(err)}`,
-			);
+			// runNonce is persisted across restarts (352af88) so the session id
+			// can already exist in the DSH store when a restarted bridge tries
+			// to create it again — the store refuses (session "…" already
+			// exists). Resume the persisted session instead of failing: the
+			// agent identity survives, the GUI keeps the same conversation row,
+			// and the event wiring below works identically for a resumed agent.
+			if (err instanceof Error && /already exists/.test(err.message)) {
+				// The persisted session id is taken. dsh-agent-loop's resume is
+				// UNUSABLE here: it returns successfully, but the first turn then
+				// fails with "already has a persisted log on disk that does not
+				// match this live session (id collision)" — the mismatch check is
+				// lazy (deferred to turn time). So don't resume; mint a FRESH
+				// run nonce and create a brand-new session instead. The old log
+				// is left in place (orphaned, harmless); the GUI gets a new
+				// conversation row, and the message gets a reply.
+				deps.logger?.warn(
+					`session id taken for ${key} — minting fresh session (resume is broken for mismatched logs)`, 
+				);
+				runNonce = `${Date.now().toString(36)}${Math.random()
+					.toString(36)
+					.slice(2, 6)}`;
+				const freshId = bridgeKey(key);
+				owned = await c.agents.create({
+					sessionId: freshId,
+					meta: {
+						cwd: deps.cwd?.() ?? process.cwd(),
+						agentPreset: deps.preset?.() ?? "ptc",
+					},
+					...(agentOptions ? { agentOptions } : {}),
+					setup,
+				});
+				// The fresh session has a new id — subsequent wiring (handle
+				// sessionId, keyBySession) must use it, not the collided id.
+				sessionId = freshId;
+			} else {
+				throw new Error(
+					`failed to create DSH agent for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
 		}
 		if (!owned?.agent)
 			throw new Error(`DSH agents.create returned no agent for ${key}`);
@@ -489,6 +518,20 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		);
 		disposers.set(key, disp);
 
+		// Surface agent-loop failures that dsh-agent-loop's kick() swallows
+		// (its driver catch is empty). Without this, a turn that dies in
+		// prepareCall/step (e.g. missing provider/model after resume) is
+		// completely silent — no reply, no log. This makes it observable.
+		const errDisp = agent.ctx.on(
+			"agent/error",
+			(payload: { error?: unknown }) => {
+				deps.logger?.warn(
+					`agent error for ${key}: ${payload.error instanceof Error ? payload.error.message : String(payload.error)}`,
+				);
+			},
+		);
+		disposers.set(key, errDisp);
+
 		return handle;
 	}
 
@@ -511,6 +554,21 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		size: () => tracked.size,
 		rotate(key) {
 			generations.set(key, (generations.get(key) ?? 0) + 1);
+			// /new: the OLD agent must no longer be reused (next message opens a
+			// fresh session row), but it must NOT be torn down via
+			// handle.dispose() — that removes its session from the store and the
+			// previous conversation vanishes from the GUI list. Lightweight
+			// detach: drop listeners + tracking so the old session id stays
+			// listed; the agent idles out via the TTL sweep.
+			const t = tracked.get(key);
+			if (t) {
+				disposers.get(key)?.();
+				disposers.delete(key);
+				listeners.delete(key);
+				tracked.delete(key);
+				const oldId = t.handle.sessionId;
+				if (oldId) keyBySession.delete(oldId);
+			}
 		},
 		async dispose(key) {
 			const t = tracked.get(key);
