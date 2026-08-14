@@ -797,8 +797,13 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				configStore.update({ workspaceRoot: target });
 				configStore.saveOverrides();
 				// Only the current conversation rebuilds (next message) — other
-				// conversations keep their agents/sessions.
-				await conversations?.dispose(bridge.conversationKeyFor(msg));
+				// conversations keep their agents/sessions. rotate() (NOT dispose):
+				// dispose() tears down the agent AND removes its session from the
+				// store (GUI row vanishes) and the next message would reuse the
+				// same sessionId → stale content / id collision. rotate() mints a
+				// fresh runNonce so the next message opens a brand-new session
+				// under the new cwd, and the old row stays listed.
+				await conversations?.rotate(bridge.conversationKeyFor(msg));
 				await sender.replyTo(
 					msg,
 					`工作区已切换: ${target}\n当前会话已重置，下一条消息在新工作区生效（其他会话不受影响）。`,
