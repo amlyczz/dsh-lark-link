@@ -10,6 +10,7 @@
 //     StreamChunk = { type:'text-delta', text } | …
 //     AssistantMessage.content: ContentBlock[]  (no .text shortcut)
 
+import { basename } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import type { Agent, ModelSelection } from "@deepseek-ai/dsh-agent";
@@ -172,17 +173,44 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				// evidence: `Error: unknown tool "bash"` / "write_file" / …).
 				meta: { cwd: deps.cwd?.() ?? process.cwd(), agentPreset: "standard" },
 				...(agentOptions ? { agentOptions } : {}),
-				...(defaultModel
-					? {
-							setup: (agentCtx: Context) => {
-								installModelSelection(agentCtx, {
-									current: defaultModel,
-									assembled: undefined,
-								});
-								return undefined; // void — the disposer is agentCtx-scoped
-							},
+				setup: async (agentCtx: Context) => {
+					// Model selection (optional — depends on the deployment
+					// agentDefaultModel service).
+					if (defaultModel) {
+						installModelSelection(agentCtx, {
+							current: defaultModel,
+							assembled: undefined,
+						});
+								// Mount the "standard" preset into the agent scope —
+								// exactly what the GUI path does via apiproxy's
+								// composeAgent. Without this the web profile's host-plane
+								// tool rows stay disabled and the bridge agent has NO
+								// bash/fs/goal/subagent tools (session-log evidence:
+								// `Error: unknown tool "bash"` / "write_file" / …).
+					}
+					// Mount the "standard" preset into the agent scope —
+					// exactly what the GUI path does via apiproxy's
+					// composeAgent. Without this the web profile's host-plane
+					// tool rows stay disabled and the bridge agent has NO
+					// bash/fs/goal/subagent tools (session-log evidence:
+					// `Error: unknown tool "bash"` / "write_file" / …).
+					const presets = (
+						c as unknown as {
+							get?(name: string):
+								| {
+										mount?(
+											agentCtx: Context,
+											presetId: string,
+										): Promise<unknown>;
+									}
+								| undefined;
 						}
-					: {}),
+					).get?.("agentPresets");
+					if (presets?.mount) {
+						await presets.mount(agentCtx, "standard");
+					}
+					return undefined; // void — disposer is agentCtx-scoped
+				},
 			});
 		} catch (err) {
 			throw new Error(
@@ -191,6 +219,22 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		}
 		if (!owned?.agent)
 			throw new Error(`DSH agents.create returned no agent for ${key}`);
+		// Ensure a durable workspace record exists for the session cwd —
+		// otherwise the GUI lists the session under 未分组 (workspaces are only
+		// created when a user picks one in the UI). Best-effort.
+		const wsCwd = deps.cwd?.() ?? process.cwd();
+		try {
+			const workspaces = (
+				c as unknown as {
+					get?(name: string):
+						| { create?(path: string, title?: string): Promise<unknown> }
+						| undefined;
+				}
+			).get?.("workspaceRegistry");
+			await workspaces?.create?.(wsCwd, basename(wsCwd));
+		} catch {
+			// workspace registry optional / create failed — ignore
+		}
 		const agent = owned.agent;
 
 		const handle: AgentHandle = {

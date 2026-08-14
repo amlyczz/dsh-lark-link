@@ -14,6 +14,8 @@
 - **修复：`lark_send_local_file` 报「无法定位当前飞书会话」**——agent.id 带每运行 nonce 后缀而 route key 不带；改用 backend.keyForSessionId 反向映射（回退剥离 nonce）
 - **修复：`/workspace <path>` 切换无效**——现持久化 `workspaceRoot` 到配置并重建会话，下一条消息在新 cwd 生效（无参显示当前工作区）
 - **入站多媒体（M6）**：飞书图片→下载→attachment store（ImageBlock，视觉模型）；文件→下载→有界文本提取。附件解析失败降级为纯文本，不丢消息
+- **修复：bridge agent 仍只有 2 个工具（画图发文件失败）**——`meta.agentPreset` 写入 header 但工具未挂载：preset 需在 agent `setup(agentCtx)` 里显式 `agentPresets.mount(agentCtx, "standard")`（GUI 经 apiproxy 的 composeAgent 就是这样做的）。setup 现无条件执行（模型选择可选、preset 挂载必做）
+- **修复：会话显示在「未分组」**——DSH 工作区记录只在 GUI 选择工作区时创建；bridge 现于 agent 创建时对会话 cwd 调 `workspaceRegistry.create()`（best-effort），/workspace 切换后同样生效
 - **修复：多媒体出站（lark_send_local_file）与 /doctor 上传 400**——SDK `im.v1.file/image.create` 需要 `data:{file_type,file_name,file}` / `data:{image_type,image}`（multipart），原实现传裸 Buffer（code 9499）。同时路径检查改用 `workspaceRoot`（/workspace 切换后 agent 在工作区建的文件不再被 process.cwd() 误拒），svg 等非光栅格式自动按 file 发送
 - **`/doctor` 诊断包升级为 ZIP**：解压当前会话的 DSH session log（`session.jsonl`，与 GUI Session log 导出同构）+ 脱敏 ISSUE.md + 说明打包为 zip 发回飞书；无日志或打包失败回退 .md 单文件，再回退文本
 - **修复 `/help` 提示**：DSH 的 skill 是模型工具（`skill` tool）无 `/skill:name` 前缀——修正帮助卡片与 README 文案

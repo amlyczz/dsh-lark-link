@@ -287,9 +287,7 @@ export async function buildLarkClient(
 			// SDK im.v1.image.create expects data: {image_type, image}.
 			return sdkClient.im.image.create({
 				data: { image_type: "message", image: p.image },
-			}) as Promise<
-				{ image_key?: string } | { data?: { image_key?: string } }
-			>;
+			}) as Promise<{ image_key?: string } | { data?: { image_key?: string } }>;
 		},
 		async downloadResource(params) {
 			const p = params as {

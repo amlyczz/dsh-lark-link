@@ -126,7 +126,11 @@ test("adapter: create works without agentDefaultModel (no provider/model)", asyn
 		undefined,
 		"no agentOptions without default model",
 	);
-	assert.equal(opts.setup, undefined, "no setup without default model");
+	assert.equal(
+		typeof opts.setup,
+		"function",
+		"setup always mounts the agent preset",
+	);
 	assert.ok(handle.agentId);
 });
 
