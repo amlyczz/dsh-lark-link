@@ -52,6 +52,7 @@ import {
 	modeCard,
 	modelCard,
 	permissionCard,
+	questionCard,
 	withButtons,
 	button,
 	AGENT_PRESETS,
@@ -142,7 +143,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			liveModelSelection.model = cur.model;
 		}
 	}
-	let backend;
+	let backend: ReturnType<typeof createDshAdapter> | undefined;
 	try {
 		backend = createDshAdapter({
 			ctx,
@@ -154,6 +155,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				return p === "ptc" ? "code" : p; // 别名兼容
 			},
 			modelSelection: { current: liveModelSelection },
+			askUserQuestion,
 		});
 	} catch (err) {
 		logger.warn(
@@ -457,6 +459,85 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		ctx: bridge,
 		secrets: [],
 	});
+
+	// ---- intent confirmation (ask_user_question → Feishu) ---------------------
+	// Model questions pause the tool call until the user answers; we send a
+	// Feishu card (option buttons) and resolve on the callback. Plain-text
+	// replies to the same conversation are treated as a custom answer.
+	const pendingQuestions = new Map<
+		string,
+		{
+			resolve: (a: { id: string; selected: string[]; custom?: string }) => void;
+			chatId: string;
+			questionId: string;
+			timer: NodeJS.Timeout;
+			options: Array<{ label: string }>;
+		}
+	>();
+
+	async function askUserQuestion(
+		questions: Array<{
+			id: string;
+			question: string;
+			header?: string;
+			options?: Array<{ label: string; description?: string }>;
+			multiSelect?: boolean;
+		}>,
+		agentId: string,
+	): Promise<{ answers: Array<{ id: string; selected: string[]; custom?: string }> }> {
+		// One card per question, answered serially (multi-question is rare).
+		const answers: Array<{
+			id: string;
+			selected: string[];
+			custom?: string;
+		}> = [];
+		const key = backend?.keyForSessionId?.(agentId);
+		const route = key ? routeStore.get(key) : undefined;
+		const chatId = route?.chatId;
+		if (!chatId) {
+			logger.warn(`ask_user_question: no Feishu route for ${agentId}`);
+			return {
+				answers: questions.map((q) => ({
+					id: q.id,
+					selected: ["(无会话，未回答)"],
+				})),
+			};
+		}
+		for (const q of questions) {
+			const answer = await new Promise<{
+				id: string;
+				selected: string[];
+				custom?: string;
+			}>((resolve) => {
+				const timer = setTimeout(() => {
+					pendingQuestions.delete(q.id);
+					resolve({ id: q.id, selected: ["(超时未回答)"] });
+				}, 10 * 60_000);
+				timer.unref?.();
+				pendingQuestions.set(q.id, {
+					resolve,
+					chatId,
+					questionId: q.id,
+					timer,
+					options: q.options ?? [],
+				});
+				void sender
+					.sendCard(chatId, questionCard(q))
+					.catch((err) => {
+						clearTimeout(timer);
+						pendingQuestions.delete(q.id);
+						resolve({
+							id: q.id,
+							selected: [
+								`(卡片发送失败: ${err instanceof Error ? err.message : String(err)})`,
+							],
+						});
+					});
+			});
+			answers.push(answer);
+		}
+		return { answers };
+	}
 
 	// ---- command router --------------------------------------------------------
 	const dshCommands: DshCommandRegistry = {
@@ -958,6 +1039,28 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			const messageId = raw.message?.message_id ?? "";
 			if (!op) return;
 			// op may be "name" (bare command) or "name:input" (picker callback).
+			// "uqa:<questionId>:<optionIndex>" answers a pending intent question.
+			if (op.startsWith("uqa:")) {
+				const parts = op.split(":");
+				const questionId = parts[1] ?? "";
+				const optionIndex = Number(parts[2] ?? NaN);
+				const pending = pendingQuestions.get(questionId);
+				if (pending) {
+					clearTimeout(pending.timer);
+					pendingQuestions.delete(questionId);
+					const label =
+						pending.options[optionIndex]?.label ??
+						String(optionIndex);
+					void sender
+						.sendText(pending.chatId, `已收到你的选择 ✅（${label}）`)
+						.catch(() => undefined);
+					pending.resolve({
+						id: questionId,
+						selected: [label],
+					});
+				}
+				return;
+			}
 			const sep = op.indexOf(":");
 			const cmd = sep === -1 ? op : op.slice(0, sep);
 			const arg = sep === -1 ? "" : op.slice(sep + 1);
@@ -1061,6 +1164,22 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		const transport = createTransport({
 			getClient: () => larkClient ?? ({} as FeishuClientLike),
 			onMessage: async (msg) => {
+				// Custom answer to a pending intent question: a plain-text reply
+				// in the same chat resolves it instead of reaching the agent.
+				const pendingForChat = [...pendingQuestions.values()].find(
+					(p) => p.chatId === msg.chatId,
+				);
+				if (pendingForChat && (msg.text ?? "").trim() !== "") {
+					clearTimeout(pendingForChat.timer);
+					pendingQuestions.delete(pendingForChat.questionId);
+					const text = (msg.text ?? "").trim();
+					pendingForChat.resolve({
+						id: pendingForChat.questionId,
+						selected: [],
+						custom: text,
+					});
+					return;
+				}
 				await messageHandler.handleInbound(msg);
 			},
 			onEvent: (event, data) => {

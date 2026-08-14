@@ -99,6 +99,45 @@ export function withButtons(card: unknown, buttons: unknown[]): unknown {
 	};
 }
 
+/**
+ * Intent-confirmation card (DSH ask_user_question → Feishu). Option buttons
+ * answer via op "uqa:<questionId>:<optionIndex>"; the footer invites a
+ * plain-text reply for a custom answer.
+ */
+export function questionCard(q: {
+	id: string;
+	header?: string;
+	question: string;
+	detail?: string;
+	options?: ReadonlyArray<{ label: string; description?: string }>;
+}): unknown {
+	const elements: unknown[] = [
+		{ tag: "markdown", content: q.question },
+		...(q.detail ? [{ tag: "markdown", content: q.detail }] : []),
+	];
+	(q.options ?? []).forEach((o, i) => {
+		elements.push(
+			button(o.label, { op: `uqa:${q.id}:${i}` }),
+		);
+	});
+	elements.push({
+		tag: "markdown",
+		content: "或直接发消息输入自定义答案",
+	});
+	return {
+		schema: "2.0",
+		...(q.header
+			? {
+					header: {
+						title: { tag: "plain_text", content: q.header },
+						template: "blue",
+					},
+				}
+			: {}),
+		body: { elements },
+	};
+}
+
 /** Single-select mode picker card — tap a button to switch (no typing). */
 export function modeCard(current?: string): unknown {
 	return markdownCard(

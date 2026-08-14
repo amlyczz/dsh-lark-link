@@ -16,6 +16,7 @@ import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import type { Agent, ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { defineTool } from "@deepseek-ai/dsh-tools";
 import type {
 	SessionEventOut,
 	DshSessionBackend,
@@ -37,6 +38,24 @@ export interface DshAdapterDeps {
 	 * model WITHOUT rebuilding the agent (the session survives /model).
 	 */
 	modelSelection?: { current: { provider: string; model: string } };
+	/**
+	 * ask_user_question → Feishu bridge. When present, a shadow
+	 * `ask_user_question` tool is registered in each agent scope (overriding
+	 * the preset's global tool) that forwards the question to Feishu cards and
+	 * waits for the user's answer.
+	 */
+	askUserQuestion?: (
+		questions: Array<{
+			id: string;
+			question: string;
+			header?: string;
+			options?: Array<{ label: string; description?: string }>;
+			multiSelect?: boolean;
+		}>,
+		agentId: string,
+	) => Promise<{
+		answers: Array<{ id: string; selected: string[]; custom?: string }>;
+	}>;
 	logger?: { info(msg: string): void; warn(msg: string): void };
 }
 
@@ -207,6 +226,139 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 					).get?.("agentPresets");
 					if (presets?.mount) {
 						await presets.mount(agentCtx, deps.preset?.() ?? "ptc");
+					}
+					// Shadow ask_user_question: forward DSH intent-confirmation
+					// questions to Feishu cards instead of the GUI-only provider.
+					if (deps.askUserQuestion) {
+						const askTool = defineTool({
+							name: "ask_user_question",
+							description:
+								"Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. Send one or more questions, each with a stable id that will be echoed in the answer.",
+							parameters: {
+								questions: {
+									type: "array",
+									required: true,
+									description:
+										"Questions to ask the user before continuing.",
+									items: {
+										type: "object",
+										additionalProperties: true,
+										properties: {
+											id: {
+												type: "string",
+												required: true,
+												description:
+													"Stable id for this question; echoed in the answer.",
+											},
+											question: {
+												type: "string",
+												required: true,
+												description:
+													"The specific question to ask the user.",
+											},
+											header: {
+												type: "string",
+												description:
+													"Optional short heading for the question.",
+											},
+											options: {
+												type: "array",
+												description:
+													"Optional choices to show the user.",
+												items: {
+													type: "object",
+													additionalProperties: true,
+													properties: {
+														label: {
+															type: "string",
+															required: true,
+															description:
+																"Short user-facing option label.",
+														},
+														description: {
+															type: "string",
+															description:
+																"One sentence explaining the tradeoff or impact.",
+														},
+													},
+												},
+											},
+											multi_select: {
+												type: "boolean",
+												description:
+													"Whether the user may select more than one option. Defaults to false.",
+											},
+										},
+									},
+								},
+							},
+							output: {
+								schema: {
+									type: "object",
+									additionalProperties: false,
+									properties: {
+										answers: {
+											type: "array",
+											required: true,
+											items: {
+												type: "object",
+												additionalProperties: false,
+												properties: {
+													id: {
+														type: "string",
+														required: true,
+													},
+													selected: {
+														type: "array",
+														required: true,
+														items: { type: "string" },
+													},
+													custom: { type: "string" },
+												},
+											},
+										},
+									},
+								},
+								render: (_args, value) => [
+									{ type: "text", text: JSON.stringify(value) },
+								],
+							},
+							async execute(args, exec) {
+								if (!deps.askUserQuestion)
+									return { answers: [] };
+								const questions = (args.questions ?? []).map(
+									(q: {
+										id: string;
+										question: string;
+										header?: string;
+										options?: Array<{
+											label: string;
+											description?: string;
+										}>;
+										multi_select?: boolean;
+									}) => ({
+										id: q.id,
+										question: q.question,
+										...(q.header !== undefined
+											? { header: q.header }
+											: {}),
+										...(q.options !== undefined
+											? { options: q.options }
+											: {}),
+										...(q.multi_select !== undefined
+											? { multiSelect: q.multi_select }
+											: {}),
+									}),
+								);
+								const agentId =
+									(exec as { agent?: { id?: string } }).agent
+										?.id ?? "";
+								return deps.askUserQuestion(questions, agentId);
+							},
+						});
+						(agentCtx as unknown as {
+							tools?: { register?(t: unknown): unknown };
+						}).tools?.register?.(askTool);
 					}
 					return undefined; // void — disposer is agentCtx-scoped
 				},
