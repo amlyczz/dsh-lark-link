@@ -351,6 +351,12 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			return n;
 		},
 		size: () => tracked.size,
+		async dispose(key) {
+			const t = tracked.get(key);
+			if (!t) return;
+			await t.handle.dispose();
+			tracked.delete(key);
+		},
 		async disposeAll() {
 			for (const t of tracked.values()) await t.handle.dispose();
 			tracked.clear();

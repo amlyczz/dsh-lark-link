@@ -632,10 +632,12 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				}
 				configStore.update({ workspaceRoot: target });
 				configStore.saveOverrides();
-				await conversations?.disposeAll();
+				// Only the current conversation rebuilds (next message) — other
+				// conversations keep their agents/sessions.
+				await conversations?.dispose(bridge.conversationKeyFor(msg));
 				await sender.replyTo(
 					msg,
-					`工作区已切换: ${target}\n会话已重置，下一条消息在新工作区生效。`,
+					`工作区已切换: ${target}\n当前会话已重置，下一条消息在新工作区生效（其他会话不受影响）。`,
 				);
 				return true;
 			}
@@ -734,10 +736,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					);
 					return true;
 				}
-				await conversations?.disposeAll();
+				await conversations?.dispose(bridge.conversationKeyFor(msg));
 				await sender.replyTo(
 					msg,
-					`模型已切换: ${provider}/${model}\n会话已重置，下一条消息生效。`,
+					`模型已切换: ${provider}/${model}\n当前会话已重置，下一条消息生效（其他会话不受影响）。`,
 				);
 				return true;
 			}
@@ -765,10 +767,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				}
 				configStore.update({ agentPreset: arg });
 				configStore.saveOverrides();
-				await conversations?.disposeAll();
+				await conversations?.dispose(bridge.conversationKeyFor(msg));
 				await sender.replyTo(
 					msg,
-					`模式已切换为 ${arg}（会话已重置，下条消息生效）`,
+					`模式已切换为 ${arg}（当前会话已重置，下条消息生效；其他会话不受影响）`,
 				);
 				return true;
 			}

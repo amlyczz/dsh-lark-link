@@ -30,6 +30,8 @@ export interface ConversationManager {
   keyFor(msg: FeishuInboundMessage): string;
   /** Cancel the current turn of one conversation (does not touch others). */
   stop(key: string): Promise<void>;
+  /** Dispose one conversation's agent (next message rebuilds it under new config). */
+  dispose(key: string): Promise<void>;
   /** Reap idle agents; returns disposed count. */
   sweep(): number;
   size(): number;
@@ -84,6 +86,12 @@ export function createConversationManager(deps: ConversationManagerDeps): Conver
     async stop(key) {
       const agent = deps.backend.get(key);
       if (agent) await agent.cancel();
+    },
+    async dispose(key) {
+      hooks.get(key)?.();
+      hooks.delete(key);
+      queues.delete(key);
+      await deps.backend.dispose(key);
     },
     sweep() {
       const n = deps.backend.disposeIdle(deps.idleTtlMs);
