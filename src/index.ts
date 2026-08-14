@@ -57,9 +57,19 @@ import {
 } from "./host/lark-client.ts";
 import * as qrcode from "qrcode-terminal";
 import QRCode from "qrcode";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
-import { mkdirSync, readFileSync, statSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve, basename } from "node:path";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	statSync,
+	rmSync,
+	existsSync,
+	writeFileSync,
+} from "node:fs";
+import { execFileSync } from "node:child_process";
 import type { FeishuInboundMessage } from "./common/types.ts";
 
 export const name = "dsh-lark-link";
@@ -496,13 +506,39 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				return true;
 			case "support":
 			case "doctor": {
-				// pi design: the diagnostic bundle comes back as a FILE, not a wall
-				// of text — upload the generated report and send it (fall back to
-				// text when upload is unavailable).
+				// pi design: the diagnostic bundle comes back as a FILE. The
+				// bundle is a ZIP containing the DSH session log (decompressed
+				// jsonl, same shape as the GUI "Session log" export) plus a
+				// sanitized ISSUE.md — falls back to a text reply when the
+				// upload path is unavailable.
 				const diag = await diagnostics.build();
 				const client = getLarkClient();
 				if (client?.uploadFile) {
 					try {
+						const sessionId = bridge.backend?.get(
+							bridge.conversationKeyFor(msg),
+						)?.sessionId;
+						const log = sessionId ? findSessionLog(sessionId) : undefined;
+						let zipBuf: Buffer | undefined;
+						if (log) {
+							zipBuf = buildDoctorZip(log.zstd, diag.text, diag.issueMd);
+						}
+						if (zipBuf) {
+							const fileName = `lark-link-doctor-${Date.now()}.zip`;
+							const uploadKey = extractUploadKey(
+								await client.uploadFile({
+									file_type: "file",
+									file_name: fileName,
+									file: zipBuf,
+								}),
+								"file_key",
+							);
+							if (uploadKey) {
+								await sender.sendFile(msg.chatId, uploadKey, "file");
+								return true;
+							}
+						}
+						// No session log or zip failed — send the report as a file.
 						const fileName = `lark-link-doctor-${Date.now()}.md`;
 						const buf = Buffer.from(
 							`# dsh-lark-link 诊断包\n\n${diag.text}\n\n${diag.issueMd}\n`,
@@ -1033,6 +1069,71 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			runLarkSubcommand((rawInput.trim().split(/\s+/)[0] ?? "").toLowerCase()),
 		"setup|start|stop|restart|status|uninstall-clean",
 	);
+
+	/**
+	 * Locate the DSH session log for a bridge session id. Persisted logs live
+	 * at <DSH_HOME>/sessions/<workspace-dir>/<encoded-session-id>/session.jsonl.zstd
+	 * where ":" encodes as "~003A" — scan every workspace dir for the match.
+	 */
+	const findSessionLog = (
+		sessionId: string,
+	): { zstd: string; jsonl: string } | undefined => {
+		const sessionsRoot = join(process.env.DSH_HOME ?? join(homedir(), ".dsh"), "sessions");
+		if (!existsSync(sessionsRoot)) return undefined;
+		const encoded = sessionId.replace(/:/g, "~003A");
+		for (const wsDir of readdirSync(sessionsRoot)) {
+			const sessionDir = join(sessionsRoot, wsDir, encoded);
+			const zstd = join(sessionDir, "session.jsonl.zstd");
+			if (existsSync(zstd)) {
+				return { zstd, jsonl: join(sessionDir, "session.jsonl") };
+			}
+		}
+		return undefined;
+	};
+
+	/** Zip a DSH session log + diagnostics into a doctor bundle. */
+	const buildDoctorZip = (
+		zstdPath: string,
+		diagText: string,
+		issueMd: string,
+	): Buffer | undefined => {
+		const dir = mkdtempSync(join(tmpdir(), "lark-doctor-"));
+		try {
+			// Decompress the zstd session log to plain JSONL (aligns with the
+			// GUI "Session log" export).
+			execFileSync("unzstd", ["-f", "-q", zstdPath, "-o", join(dir, "session.jsonl")], {
+				stdio: "ignore",
+			});
+			writeFileSync(
+				join(dir, "ISSUE.md"),
+				`# dsh-lark-link 诊断包
+
+${diagText}
+
+${issueMd}
+`,
+				"utf8",
+			);
+			writeFileSync(
+				join(dir, "README.txt"),
+				[
+					"本压缩包内容：",
+					"- session.jsonl: 当前会话的 DSH session log（逐事件记录，含用户输入/模型输出/工具调用/错误）",
+					"- ISSUE.md: 脱敏诊断信息（配置/连接状态/Outbox 等）",
+					"",
+					"将本包直接发给维护者，或贴 ISSUE.md 给 AI 即可定位问题。",
+				].join("\n"),
+				"utf8",
+			);
+			const zipPath = join(tmpdir(), `lark-link-doctor-${Date.now()}.zip`);
+			execFileSync("zip", ["-q", "-r", zipPath, "."], { cwd: dir, stdio: "ignore" });
+			return readFileSync(zipPath);
+		} catch {
+			return undefined;
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	};
 
 	const runSetup = async (): Promise<string> => {
 		const ref = getCfg().credentialRef;

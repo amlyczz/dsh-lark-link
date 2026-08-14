@@ -19,7 +19,7 @@
 | 🔀 每会话独立 agent | 每飞书会话一个 DSH session（私聊/群隔离、并行不串线、idle 回收、映射持久化） |
 | 🖥 复用 DSH Web GUI | 桥 agent = 原生 DSH session，聊天/流式/工具卡/设置全由 GUI 呈现；client 只加状态浮层 |
 | 🔘 一键按钮卡片 | 欢迎卡/命令面板/状态卡带 schema 2.0 平铺按钮（behaviors callback 回传，无 tag:action——对齐飞书 200861 修复） |
-| 🔀 原生命令转发 | 三级分流：桥特有命令桥处理；DSH 已注册命令原生调 handler；`/goal`、`/skill:name`、未知 `/xxx` 原样注入 agent（无拦截无门禁） |
+| 🔀 原生命令转发 | 三级分流：桥特有命令桥处理；DSH 已注册命令原生调 handler；`/goal`、未知 `/xxx`、普通消息原样注入 agent（无拦截无门禁）；skill 无前缀——直接描述任务，模型自动加载 |
 | 🔓 无审批全放开 | 用户决策：所有工具调用默认直接放行，无审批卡、无询问 |
 | 📎 出站多媒体 | 模型经 `lark_send_local_file` 工具主动回传本地图片/文件到当前飞书会话（路径白名单 + 大小校验） |
 | 🩺 一键诊断 | 飞书 `/doctor`（`/support` 旧名兼容）→ 脱敏诊断包回发 |
@@ -85,9 +85,9 @@ npm pack           # 产出可分发 tarball
 | ---- | ---- | ---- |
 | 桥特有 | `/status` `/workspace` `/stop` `/doctor`（`/support` 兼容）`/sessions` `/lark-config` `/help` | 桥处理（状态/工作区/中断/诊断/会话列表/热改） |
 | DSH 注册命令 | `/lark-*` 及其他已注册命令 | **原生调 handler**，结果回飞书（不经模型） |
-| 原样注入 | `/goal`、`/skill:name`、模板、未知 `/xxx`、普通消息 | **原样注入**对应 DSH agent，输出经事件流逐条回飞书 |
+| 原样注入 | `/goal`、模板、未知 `/xxx`、普通消息 | **原样注入**对应 DSH agent，输出经事件流逐条回飞书 |
 
-> 命令没有前缀白名单：插件命令（如 `/goal`）、skill（`/skill:name`）、模板、任何未知 `/xxx` 都原样透传——由 DSH 侧按其原生语义执行，输出流式回投本会话。
+> 命令没有前缀白名单：插件命令（如 `/goal`）、模板、任何未知 `/xxx` 都原样透传——由 DSH 侧按其原生语义执行，输出流式回投本会话。skill 无前缀：DSH 的 skill 是模型工具（`skill` tool），直接描述任务即可，模型会自动加载对应 skill。
 
 ### 多媒体
 

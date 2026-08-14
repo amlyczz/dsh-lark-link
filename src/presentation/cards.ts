@@ -77,7 +77,8 @@ export function helpCard(): unknown {
       "- `/stop` 停止当前会话任务",
       "- `/doctor` 生成诊断包",
       "- `/lark-config k=v` 热改配置",
-      "- `/model`、`/goal`、`/skill:name` 等原样转发给 DSH",
+      "- `/model` `/goal` 等 DSH 命令原样执行",
+      "- skill 无需前缀：直接说任务（如「用 X skill 做 Y」），模型自动加载",
     ].join("\n"),
     { header: "Lark Link 帮助", accent: true },
   );
@@ -112,7 +113,7 @@ export function commandPanelCard(): unknown {
         button("工作区", { op: "workspace" }),
         button("诊断包", { op: "doctor" }),
         button("配置", { op: "lark-config" }),
-        { tag: "markdown", content: "文本命令：`/status` `/workspace` `/stop` `/doctor` `/lark-config k=v` `/help`\n\n定时任务等 `/goal`、`/skill:name` 原样转发给 DSH。" },
+        { tag: "markdown", content: "文本命令：`/status` `/workspace` `/stop` `/doctor` `/lark-config k=v` `/help`\n\n`/goal` 等 DSH 命令原样执行；skill 无需前缀，直接描述任务即可。" },
       ],
     },
   };
