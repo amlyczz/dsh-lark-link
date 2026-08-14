@@ -181,12 +181,12 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 							current: defaultModel,
 							assembled: undefined,
 						});
-								// Mount the "standard" preset into the agent scope —
-								// exactly what the GUI path does via apiproxy's
-								// composeAgent. Without this the web profile's host-plane
-								// tool rows stay disabled and the bridge agent has NO
-								// bash/fs/goal/subagent tools (session-log evidence:
-								// `Error: unknown tool "bash"` / "write_file" / …).
+						// Mount the "standard" preset into the agent scope —
+						// exactly what the GUI path does via apiproxy's
+						// composeAgent. Without this the web profile's host-plane
+						// tool rows stay disabled and the bridge agent has NO
+						// bash/fs/goal/subagent tools (session-log evidence:
+						// `Error: unknown tool "bash"` / "write_file" / …).
 					}
 					// Mount the "standard" preset into the agent scope —
 					// exactly what the GUI path does via apiproxy's
@@ -202,7 +202,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 											agentCtx: Context,
 											presetId: string,
 										): Promise<unknown>;
-									}
+								  }
 								| undefined;
 						}
 					).get?.("agentPresets");
@@ -226,7 +226,9 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		try {
 			const workspaces = (
 				c as unknown as {
-					get?(name: string):
+					get?(
+						name: string,
+					):
 						| { create?(path: string, title?: string): Promise<unknown> }
 						| undefined;
 				}
