@@ -129,7 +129,9 @@ test("manager: /new (rotate) keeps the old session listed, next message opens a 
 });
 
 test("manager: /new then a message still gets a reply (stale hook dropped)", async () => {
-	const backend = createMemoryDshBackend({ autoReply: () => "reply-after-new" });
+	const backend = createMemoryDshBackend({
+		autoReply: () => "reply-after-new",
+	});
 	const events: string[] = [];
 	const cm = createConversationManager({
 		backend,
