@@ -31,7 +31,7 @@ function makeRouter(overrides: { dshHas?: string[]; bridgeHandler?: (name: strin
     } as never,
   });
   const dshCommands: DshCommandRegistry = {
-    has: (name) => (overrides.dshHas ?? ["model"]).includes(name),
+    has: (name) => (overrides.dshHas ?? ["compact"]).includes(name),
     async run(name, rawInput) {
       return { kind: "success", text: `dsh:${name}:${rawInput}` };
     },
@@ -59,8 +59,8 @@ test("router: bridge commands are consumed by the bridge", async () => {
 });
 
 test("router: DSH-registered commands run natively and reply via outbox", async () => {
-  const { router } = makeRouter({ dshHas: ["model"] });
-  assert.equal(await router.route(mkMsg("/model flash")), "dsh");
+  const { router } = makeRouter({ dshHas: ["compact"] });
+  assert.equal(await router.route(mkMsg("/compact old")), "dsh");
 });
 
 test("router: unknown /xxx passes through to the agent (三级分流 tier 3)", async () => {

@@ -208,9 +208,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 					if (a.kind === "image" && a.imageRef) {
 						content.push({ type: "image", attachment: a.imageRef });
 					} else if (a.kind === "file" && a.textPreview) {
-						parts.push(
-							`\n\n[附件 ${a.name ?? "文件"} 内容]\n${a.textPreview}`,
-						);
+						parts.push(`\n\n[附件 ${a.name ?? "文件"} 内容]\n${a.textPreview}`);
 					} else if (a.kind === "file") {
 						parts.push(`\n\n[附件 ${a.name ?? "文件"}（未能提取文本）]`);
 					}

@@ -296,9 +296,7 @@ export async function buildLarkClient(
 				method: "GET",
 				params: { type: p.type },
 				responseType: "stream",
-			})) as
-				| { getReadableStream?: () => NodeJS.ReadableStream }
-				| undefined;
+			})) as { getReadableStream?: () => NodeJS.ReadableStream } | undefined;
 			const stream = res?.getReadableStream?.();
 			if (!stream)
 				throw new Error(`downloadResource: no stream for ${p.fileKey}`);

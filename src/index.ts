@@ -571,6 +571,99 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				await sender.replyTo(msg, "已停止当前会话任务");
 				return true;
 			}
+			case "model": {
+				// /model — list the current model + available models (no arg) or
+				// switch: /model <provider>/<model> | /model <model>. The bridge
+				// agents snapshot their model at creation, so a switch rebuilds
+				// hosted sessions (next message uses the new model).
+				const arg = _rawInput.trim();
+				const services = ctx as unknown as {
+					get?(name: string): unknown;
+				};
+				const adm = services.get?.("agentDefaultModel") as
+					| {
+							currentSelection?(): {
+								provider?: string;
+								model?: string;
+							} | undefined;
+							saveSelection?(s: {
+								provider: string;
+								model: string;
+							}): Promise<unknown>;
+						}
+					| undefined;
+				const llm = services.get?.("llm") as
+					| {
+							listProviders?(): Array<{ id?: string; name?: string }>;
+							listModels?(
+								p: string,
+							): Promise<Array<{ id: string; name?: string }>>;
+						}
+					| undefined;
+				const current = adm?.currentSelection?.();
+				if (!arg) {
+					const lines = [
+						`**当前模型**: ${current?.provider ?? "?"}/${current?.model ?? "未设置"}`,
+					];
+					const providers = llm?.listProviders?.() ?? [];
+					for (const p of providers) {
+						let models: Array<{ id: string; name?: string }> = [];
+						try {
+							models =
+								(await llm?.listModels?.(p.id ?? "")) ?? [];
+						} catch {
+							// adapter without a catalog — skip
+						}
+						if (models.length === 0) continue;
+						lines.push("", `**${p.name ?? p.id}**`);
+						for (const m of models) {
+							lines.push(
+								`- ${m.id}${current?.model === m.id ? " ← 当前" : ""}`,
+							);
+						}
+					}
+					lines.push(
+						"",
+						"切换：/model <provider>/<model>（如 /model deepseek-official/deepseek-v4-flash）",
+					);
+					await sender.replyTo(msg, lines.join("\n"));
+					return true;
+				}
+				// Switch: accept provider/model or bare model id (same provider).
+				let provider = current?.provider ?? "";
+				let model = arg;
+				if (arg.includes("/")) {
+					const [p, m] = arg.split("/");
+					if (p) provider = p.trim();
+					model = (m ?? "").trim();
+				}
+				if (!provider || !model) {
+					await sender.replyTo(
+						msg,
+						"用法：/model <provider>/<model> 或 /model <model>",
+					);
+					return true;
+				}
+				if (!adm?.saveSelection) {
+					await sender.replyTo(msg, "模型切换服务不可用");
+					return true;
+				}
+				try {
+					await adm.saveSelection({ provider, model });
+				} catch (err) {
+					await sender.replyTo(
+						msg,
+						`模型切换失败: ${err instanceof Error ? err.message : String(err)}`,
+					);
+					return true;
+				}
+				await conversations?.disposeAll();
+				await sender.replyTo(
+					msg,
+					`模型已切换: ${provider}/${model}\n会话已重置，下一条消息生效。`,
+				);
+				return true;
+			}
 			case "lark": {
 				// Feishu-side /lark subcommands — same executor as the DSH command.
 				const sub = _rawInput.trim().split(/\s+/)[0] ?? "";
@@ -787,16 +880,13 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// session id (lark-link:dm:ou_x:nonce). The session id carries the
 				// per-run nonce suffix while route keys do not — prefer the backend
 				// reverse map, else strip the trailing nonce.
-				const sessionId =
-					(exec as { agent?: { id?: string } }).agent?.id ?? "";
+				const sessionId = (exec as { agent?: { id?: string } }).agent?.id ?? "";
 				const prefix = "lark-link:";
 				const backendKey = bridge.backend?.keyForSessionId?.(sessionId);
 				const key =
 					backendKey ??
 					(sessionId.startsWith(prefix)
-						? sessionId
-								.slice(prefix.length)
-								.replace(/:[a-z0-9]{8,}$/, "")
+						? sessionId.slice(prefix.length).replace(/:[a-z0-9]{8,}$/, "")
 						: sessionId);
 				const route = routeStore.get(key);
 				if (!route) return "错误: 无法定位当前飞书会话";

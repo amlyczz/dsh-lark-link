@@ -48,6 +48,7 @@ const BRIDGE_COMMANDS = new Set([
 	"lark-config",
 	"help",
 	"feishu-config",
+	"model",
 ]);
 
 export function createCommandRouter(deps: CommandRouterDeps): CommandRouter {
@@ -70,8 +71,19 @@ export function createCommandRouter(deps: CommandRouterDeps): CommandRouter {
 				return handled ? "bridge" : "agent";
 			}
 
-			// Tier 2: DSH-registered commands (native handler, no model round-trip)
-			const agent = deps.ctx.backend?.get(deps.ctx.conversationKeyFor(msg));
+			// Tier 2: DSH-registered commands (native handler, no model round-trip).
+			// Commands resolve per agent — lazy-create the session agent when the
+			// first message of a conversation is a command (otherwise every
+			// DSH command fails on a fresh chat).
+			const key2 = deps.ctx.conversationKeyFor(msg);
+			let agent = deps.ctx.backend?.get(key2);
+			if (!agent) {
+				try {
+					agent = await deps.ctx.backend?.ensureAgent?.(key2);
+				} catch {
+					// fall through to agent
+				}
+			}
 			const agentId = agent?.agentId ?? "";
 			if (agentId && deps.commands.has(cmdName, agentId)) {
 				try {
