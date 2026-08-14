@@ -74,7 +74,7 @@ export const AGENT_PRESETS: ReadonlyArray<{
 	desc: string;
 }> = [
 	{ id: "standard", label: "标准模式", desc: "全能：文件/Shell/检索/Skills/目标/子代理/工作流" },
-	{ id: "ptc", label: "PTC 模式", desc: "标准能力 + Code Mode（多步操作一次执行，更快）" },
+	{ id: "code", label: "PTC 模式", desc: "标准能力 + Code Mode（多步操作一次执行，更快）" },
 	{ id: "minimal", label: "极简模式", desc: "仅 bash + 文件编辑，轻量省 token" },
 	{ id: "cordis", label: "创造模式", desc: "标准能力 + preset 创作工具（面向开发者）" },
 ];

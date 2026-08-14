@@ -71,7 +71,7 @@ export interface FeishuConfig {
 	allowlist: string[];
 	/** Bridge agent workspace root (cwd for created sessions). Empty = process.cwd(). */
 	workspaceRoot: string;
-	/** Agent preset for bridge sessions (standard | ptc | minimal | cordis). */
+	/** Agent preset for bridge sessions (standard | code | minimal | cordis). */
 	agentPreset: string;
 	/** Default DSH permission preset (read-only | workspace-write | danger-full-access). */
 	permissionMode: string;
@@ -119,7 +119,7 @@ export const DEFAULT_CONFIG: FeishuConfig = {
 	maxSessions: 32,
 	allowlist: [],
 	workspaceRoot: "",
-	agentPreset: "ptc",
+	agentPreset: "code",
 	permissionMode: "danger-full-access",
 };
 

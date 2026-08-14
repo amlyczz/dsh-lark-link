@@ -133,7 +133,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			sessionPrefix: "lark-link",
 			logger,
 			cwd: () => getCfg().workspaceRoot || process.cwd(),
-			preset: () => getCfg().agentPreset || "ptc",
+			preset: () => {
+				const p = getCfg().agentPreset || "code";
+				return p === "ptc" ? "code" : p; // 别名兼容
+			},
 		});
 	} catch (err) {
 		logger.warn(
