@@ -92,6 +92,8 @@ export interface LarkSdk {
 	AppType: { SelfBuild: number };
 	Domain: { Feishu: unknown; Lark: unknown };
 	LoggerLevel: { error: number };
+	/** SDK's shared axios instance (response-unwrapping interceptors included). */
+	defaultHttpInstance?: { defaults?: { proxy?: boolean } };
 }
 
 export interface SdkClient {
@@ -152,6 +154,16 @@ export async function buildLarkClient(
 ): Promise<FeishuClientLike> {
 	const sdk = await (opts.sdkLoader ?? defaultSdkLoader)();
 	const domain = opts.domain === "lark" ? sdk.Domain.Lark : sdk.Domain.Feishu;
+	// The SDK's shared axios instance follows http_proxy/https_proxy env vars;
+	// with a proxy set, axios routes https URLs through http.request and dies
+	// with "Protocol \"https:\" not supported. Expected \"http:\"" under
+	// Node ≥18. Feishu endpoints are direct — disable proxy on the SDK's own
+	// instance (which carries the response unwrap interceptors the SDK relies
+	// on; a hand-built axios instance would break {code,data,msg} parsing).
+	const dh = sdk.defaultHttpInstance as
+		| { defaults?: { proxy?: boolean } }
+		| undefined;
+	if (dh?.defaults) dh.defaults.proxy = false;
 	const clientOpts = {
 		appId: opts.appId,
 		appSecret: opts.appSecret,

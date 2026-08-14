@@ -239,7 +239,8 @@ export function registerAppWithFetch(): RegisterAppFn {
 		if (!deviceCode) throw new Error("registerApp begin 未返回 device_code");
 		let currentBase = baseUrl;
 		let interval = ((beginRes.interval as number | undefined) ?? 5) * 1000;
-		const deadline = Date.now() + ((beginRes.expires_in as number | undefined) ?? 600) * 1000;
+		const deadline =
+			Date.now() + ((beginRes.expires_in as number | undefined) ?? 600) * 1000;
 		let domainSwitched = false;
 
 		while (Date.now() < deadline) {

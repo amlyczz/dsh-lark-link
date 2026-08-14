@@ -120,7 +120,11 @@ export function createConnectionSupervisor(deps: SupervisorDeps): ConnectionSupe
       ok = false;
     }
     lastProbeOk = ok;
-    deps.status.update({ lastProbeAt: now(), lastProbeOk: ok });
+    deps.status.update({
+      lastProbeAt: now(),
+      lastProbeOk: ok,
+      wsReady: deps.transport.wsReady(),
+    });
 
     if (ok) {
       // Healthy probe: reset failure streaks — never rebuild an idle but live

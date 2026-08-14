@@ -587,7 +587,9 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			outboxPending: outbox.pendingCount(),
 			outboxFailed: outbox.failedCount(),
 		});
-		status.setConn("connected");
+		status.setConn("connected", {
+			wsReady: transport.wsReady(),
+		});
 		bridge.setStarted(true);
 		lifecycleStarted = true;
 		logger.info("bridge started (in-process) [HMR-RELOAD-MARKER-2]");
@@ -753,9 +755,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		"lark",
 		"Lark Link bridge — usage: /lark setup|start|stop|restart|status|uninstall-clean",
 		async (rawInput) =>
-			runLarkSubcommand(
-				(rawInput.trim().split(/\s+/)[0] ?? "").toLowerCase(),
-			),
+			runLarkSubcommand((rawInput.trim().split(/\s+/)[0] ?? "").toLowerCase()),
 		"setup|start|stop|restart|status|uninstall-clean",
 	);
 
@@ -782,17 +782,17 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		// onQRCodeReady fires, and return immediately.
 		let qrInfo: { url: string; expireIn: number } | undefined;
 		void (async () => {
-		const setup = createAuthSetup({
-			// SDK registerApp is broken under Node ESM: its axios 1.19.x
-			// `default.default` entry (index.js → lib/axios.js) drives https
-			// through http.request → "Protocol \"https:\" not supported".
-			// Use the fetch-based implementation of the same device-code flow.
-			registerApp: registerAppWithFetch(),
-			persist: async (c) => {
-				await persistCredentials(credStore, ref, c);
-			},
-			logger,
-		});
+			const setup = createAuthSetup({
+				// SDK registerApp is broken under Node ESM: its axios 1.19.x
+				// `default.default` entry (index.js → lib/axios.js) drives https
+				// through http.request → "Protocol \"https:\" not supported".
+				// Use the fetch-based implementation of the same device-code flow.
+				registerApp: registerAppWithFetch(),
+				persist: async (c) => {
+					await persistCredentials(credStore, ref, c);
+				},
+				logger,
+			});
 			try {
 				const res = await setup.run({
 					onQRCodeReady(info) {

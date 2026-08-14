@@ -118,7 +118,10 @@ test("auth-setup: encodeAddons matches base64url(gzip) shape", () => {
 test("auth-setup: registerAppWithFetch drives begin → QR → poll → creds", async () => {
 	const calls: Array<{ url: string; body: string }> = [];
 	const origFetch = globalThis.fetch;
-	globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
+	globalThis.fetch = async (
+		url: string | URL | Request,
+		init?: RequestInit,
+	) => {
 		const u = String(url);
 		const body = String(init?.body ?? "");
 		calls.push({ url: u, body });
@@ -136,10 +139,13 @@ test("auth-setup: registerAppWithFetch drives begin → QR → poll → creds", 
 		// poll: first pending, then success
 		if (body.includes("action=poll")) {
 			if (calls.filter((c) => c.body.includes("action=poll")).length === 1) {
-				return new Response(JSON.stringify({ error: "authorization_pending" }), {
-					status: 400,
-					headers: { "Content-Type": "application/json" },
-				});
+				return new Response(
+					JSON.stringify({ error: "authorization_pending" }),
+					{
+						status: 400,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
 			}
 			return new Response(
 				JSON.stringify({
@@ -167,9 +173,16 @@ test("auth-setup: registerAppWithFetch drives begin → QR → poll → creds", 
 		});
 
 		assert.ok(qr, "QR emitted");
-		assert.ok(qr.url.startsWith("https://example.com/device?code=abc"), "QR url");
+		assert.ok(
+			qr.url.startsWith("https://example.com/device?code=abc"),
+			"QR url",
+		);
 		assert.ok(qr.url.includes("from=sdk"), "from=sdk");
-		assert.ok(qr.url.includes("source=node-sdk%2Fdsh-lark-link") || qr.url.includes("source="), "source param");
+		assert.ok(
+			qr.url.includes("source=node-sdk%2Fdsh-lark-link") ||
+				qr.url.includes("source="),
+			"source param",
+		);
 		assert.ok(qr.url.includes("addons="), "addons param encoded");
 		assert.equal(created.client_id, "cli_made");
 		assert.equal(created.client_secret, "sec_made");
@@ -183,7 +196,10 @@ test("auth-setup: registerAppWithFetch drives begin → QR → poll → creds", 
 
 test("auth-setup: registerAppWithFetch aborts via signal", async () => {
 	const origFetch = globalThis.fetch;
-	globalThis.fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+	globalThis.fetch = async (
+		_url: string | URL | Request,
+		init?: RequestInit,
+	) => {
 		if (String(init?.body ?? "").includes("action=begin")) {
 			return new Response(
 				JSON.stringify({

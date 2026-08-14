@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.72.0",
+    "axios": "^1.19.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0"
   },
