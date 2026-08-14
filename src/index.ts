@@ -69,19 +69,14 @@ import {
 } from "./host/lark-client.ts";
 import * as qrcode from "qrcode-terminal";
 import QRCode from "qrcode";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
 	mkdirSync,
-	mkdtempSync,
 	readFileSync,
-	readdirSync,
 	statSync,
 	rmSync,
-	existsSync,
-	writeFileSync,
 } from "node:fs";
-import { execFileSync } from "node:child_process";
 import type { FeishuInboundMessage } from "./common/types.ts";
 
 export const name = "dsh-lark-link";
@@ -697,11 +692,13 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						const sessionId = bridge.backend?.get(
 							bridge.conversationKeyFor(msg),
 						)?.sessionId;
-						const log = sessionId ? findSessionLog(sessionId) : undefined;
-						let zipBuf: Buffer | undefined;
-						if (log) {
-							zipBuf = buildDoctorZip(log.zstd, diag.text, diag.issueMd);
-						}
+						const zipBuf = sessionId
+							? await buildSessionExportZip(
+									sessionId,
+									diag.text,
+									diag.issueMd,
+							  )
+							: undefined;
 						if (zipBuf) {
 							const fileName = `lark-link-doctor-${Date.now()}.zip`;
 							const uploadKey = extractUploadKey(
@@ -1443,75 +1440,128 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	 * at <DSH_HOME>/sessions/<workspace-dir>/<encoded-session-id>/session.jsonl.zstd
 	 * where ":" encodes as "~003A" — scan every workspace dir for the match.
 	 */
-	const findSessionLog = (
+	const buildSessionExportZip = async (
 		sessionId: string,
-	): { zstd: string; jsonl: string } | undefined => {
-		const sessionsRoot = join(
-			process.env.DSH_HOME ?? join(homedir(), ".dsh"),
-			"sessions",
-		);
-		if (!existsSync(sessionsRoot)) return undefined;
-		const encoded = sessionId.replace(/:/g, "~003A");
-		for (const wsDir of readdirSync(sessionsRoot)) {
-			const sessionDir = join(sessionsRoot, wsDir, encoded);
-			const zstd = join(sessionDir, "session.jsonl.zstd");
-			if (existsSync(zstd)) {
-				return { zstd, jsonl: join(sessionDir, "session.jsonl") };
-			}
-		}
-		return undefined;
-	};
-
-	/** Zip a DSH session log + diagnostics into a doctor bundle. */
-	const buildDoctorZip = (
-		zstdPath: string,
 		diagText: string,
 		issueMd: string,
-	): Buffer | undefined => {
-		const dir = mkdtempSync(join(tmpdir(), "lark-doctor-"));
+	): Promise<Buffer | undefined> => {
 		try {
-			// Decompress the zstd session log to plain JSONL (aligns with the
-			// GUI "Session log" export).
-			execFileSync(
-				"unzstd",
-				["-f", "-q", zstdPath, "-o", join(dir, "session.jsonl")],
-				{
-					stdio: "ignore",
-				},
-			);
-			writeFileSync(
-				join(dir, "ISSUE.md"),
-				`# dsh-lark-link 诊断包
+			const services = ctx as unknown as {
+				get?(name: string): unknown;
+			};
+			const persistence = services.get?.("sessionPersistence") as
+				| {
+						readRaw?(
+							id: string,
+						): Promise<
+							| { filename: string; content: string; meta?: unknown }
+							| undefined
+						>;
+				  }
+				| undefined;
+			const query = services.get?.("sessionQuery") as
+				| {
+						traceSession?(
+							id: string,
+						): Promise<{
+							descendants: Array<{
+								session: { header: { id: string } };
+								descendants: Array<{
+									session: { header: { id: string } };
+									descendants: unknown[];
+								}>;
+							}>;
+						}>;
+					}
+				| undefined;
+			if (!persistence?.readRaw) return undefined;
 
-${diagText}
+			// Same shape as the webui "Session log" download:
+			//   session.jsonl (root, decompressed) + subagents/<id>/<name> +
+			//   media/<id>.<ext> — every entry byte-identical to the durable
+			//   artifact store, exactly like /api/session.export.
+			const files: Array<{ name: string; data: Uint8Array }> = [];
+			const root = await persistence.readRaw(sessionId);
+			if (root === undefined) return undefined;
+			files.push({ name: root.filename, data: Buffer.from(root.content, "utf8") });
 
-${issueMd}
-`,
-				"utf8",
-			);
-			writeFileSync(
-				join(dir, "README.txt"),
-				[
-					"本压缩包内容：",
-					"- session.jsonl: 当前会话的 DSH session log（逐事件记录，含用户输入/模型输出/工具调用/错误）",
-					"- ISSUE.md: 脱敏诊断信息（配置/连接状态/Outbox 等）",
-					"",
-					"将本包直接发给维护者，或贴 ISSUE.md 给 AI 即可定位问题。",
-				].join("\n"),
-				"utf8",
-			);
-			const zipPath = join(tmpdir(), `lark-link-doctor-${Date.now()}.zip`);
-			execFileSync("zip", ["-q", "-r", zipPath, "."], {
-				cwd: dir,
-				stdio: "ignore",
+			// Descendant (subagent) logs.
+			const seen = new Set<string>([sessionId]);
+			const collect = async (nodes: Array<{
+				session: { header: { id: string } };
+				descendants: unknown[];
+			}>): Promise<void> => {
+				for (const node of nodes) {
+					const id = node.session.header.id;
+					if (seen.has(id)) continue;
+					seen.add(id);
+					const raw = await persistence.readRaw?.(id);
+					if (raw !== undefined) {
+						const safe = id.replace(/[^A-Za-z0-9_-]/g, "_");
+						files.push({
+							name: `subagents/${safe}/${raw.filename}`,
+							data: Buffer.from(raw.content, "utf8"),
+						});
+					}
+					await collect((node.descendants ?? []) as typeof nodes);
+				}
+			};
+			if (query?.traceSession) {
+				const lineage = await query.traceSession(sessionId);
+				await collect(lineage.descendants as never);
+			}
+
+			// ISSUE.md + README (diagnostic bundle extras).
+			files.push({
+				name: "ISSUE.md",
+				data: Buffer.from(`# dsh-lark-link 诊断包\n\n${diagText}\n\n${issueMd}\n`, "utf8"),
 			});
-			return readFileSync(zipPath);
+			files.push({
+				name: "README.txt",
+				data: Buffer.from(
+					[
+						"本压缩包内容：",
+						"- session.jsonl: 当前会话的 DSH session log（与 WebUI 右上角 Session log 下载一致）",
+						"- subagents/: 子代理会话日志",
+						"- ISSUE.md: 脱敏诊断信息（配置/连接状态/Outbox 等）",
+						"",
+						"将本包直接发给维护者，或贴 ISSUE.md 给 AI 即可定位问题。",
+					].join("\n"),
+					"utf8",
+				),
+			});
+
+			// fflate ZIP (streaming deflate; same compressor the host export uses).
+			const { Zip, ZipDeflate } = await import("fflate");
+			const out: Buffer[] = [];
+			const archive = new Zip((err, data, final) => {
+				if (err) throw err;
+				if (data.length) out.push(Buffer.from(data));
+				if (final) {
+					const complete = Buffer.concat(out);
+					out.length = 0;
+					out.push(complete);
+				}
+			});
+			for (const f of files) {
+				const def = new ZipDeflate(f.name, { level: 6 });
+				archive.add(def);
+				const data = f.data;
+				const chunk = Buffer.alloc(65536);
+				for (let off = 0; off < data.length; off += 65536) {
+					const part = data.subarray(off, Math.min(off + 65536, data.length));
+					chunk.set(part);
+					def.push(Buffer.from(chunk.subarray(0, part.length)), false);
+				}
+				def.push(new Uint8Array(0), true);
+			}
+			archive.end();
+			return Buffer.concat(out);
 		} catch {
 			return undefined;
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
 		}
 	};
+
 
 	const runSetup = async (): Promise<string> => {
 		const ref = getCfg().credentialRef;
