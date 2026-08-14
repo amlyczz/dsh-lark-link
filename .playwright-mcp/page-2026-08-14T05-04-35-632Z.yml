@@ -1,0 +1,110 @@
+- generic [ref=e4]:
+  - generic [ref=e7]:
+    - generic [ref=e8]:
+      - button "新建会话" [ref=e9] [cursor=pointer]:
+        - img [ref=e10]
+      - button "收起侧边栏" [ref=e31] [cursor=pointer]:
+        - img [ref=e32]
+    - button "新建会话" [ref=e34] [cursor=pointer]:
+      - img [ref=e35]
+      - generic [ref=e37]: 新会话
+    - generic [ref=e40]:
+      - generic [ref=e41]:
+        - generic [ref=e42]: 工作区
+        - generic [ref=e44]:
+          - button "搜索会话" [ref=e45] [cursor=pointer]:
+            - img [ref=e46]
+          - textbox "搜索会话…"
+        - generic [ref=e49]:
+          - button "视图选项" [ref=e51] [cursor=pointer]:
+            - img [ref=e52]
+          - button "添加工作区" [ref=e54] [cursor=pointer]:
+            - img [ref=e55]
+      - tree "会话" [ref=e60]:
+        - generic [ref=e61]:
+          - treeitem "dsh-lark-link" [expanded] [ref=e63] [cursor=pointer]:
+            - img [ref=e65]
+            - generic [ref=e69]: dsh-lark-link
+          - treeitem "进行中 Lark setup 刚刚" [selected] [ref=e197] [cursor=pointer]:
+            - generic [ref=e72]:
+              - img [ref=e198]
+              - generic [ref=e207]: 进行中
+            - generic [ref=e73]: Lark setup
+            - generic [ref=e208]: 刚刚
+          - treeitem "ARK setup 5分钟" [ref=e75] [cursor=pointer]:
+            - generic [ref=e77]: ARK setup
+            - generic [ref=e78]: 5分钟
+    - generic [ref=e79]:
+      - button "🪶Lark" [ref=e82] [cursor=pointer]
+      - button "设置" [ref=e85] [cursor=pointer]:
+        - generic [ref=e86]:
+          - img [ref=e87]
+          - generic [ref=e91]: 设置
+  - generic [ref=e94]:
+    - banner [ref=e210]:
+      - generic [ref=e211]:
+        - generic [ref=e212]:
+          - navigation "会话层级" [ref=e213]:
+            - button "Lark setup" [disabled] [ref=e215]
+          - generic "功能完整的编码 Agent，支持文件编辑、Shell、文件与网页检索、Skills、计划、目标、子代理和工作流。" [ref=e218]:
+            - img [ref=e219]
+            - text: 标准模式
+        - button "Session log" [ref=e226] [cursor=pointer]:
+          - generic [ref=e227]: Session log
+          - img [ref=e228]
+      - tablist [ref=e230]:
+        - tab "对话" [selected] [ref=e231] [cursor=pointer]
+        - tab "轨迹" [ref=e232] [cursor=pointer]
+    - generic [ref=e95]:
+      - generic [ref=e238]:
+        - generic [ref=e241]:
+          - generic [ref=e243]:
+            - generic [ref=e244]: /lark
+            - generic [ref=e245]: setup
+          - generic [ref=e246]:
+            - generic [ref=e247]: 13:04
+            - button "复制" [ref=e248] [cursor=pointer]:
+              - img [ref=e249]
+        - button "上下文注入 @deepseek-ai/dsh-system-prompt" [ref=e254] [cursor=pointer]:
+          - generic [ref=e255]:
+            - img [ref=e257]
+            - img [ref=e261]
+          - generic [ref=e263]: 上下文注入
+          - generic [ref=e265]: "@deepseek-ai/dsh-system-prompt"
+        - button "上下文注入 skill-catalog" [ref=e269] [cursor=pointer]:
+          - generic [ref=e270]:
+            - img [ref=e272]
+            - img [ref=e276]
+          - generic [ref=e278]: 上下文注入
+          - generic [ref=e280]: skill-catalog
+        - 'button "Think The user typed `/lark setup`. This looks like a slash command for setting up the Lark (Feishu) bridge. Let me check the current context - I''m in a working directory `/Users/zqy/Developer/dsh-lark-link` which seems to be a DSH (DeepSeek Harness) project with a Lark/Feishu link." [ref=e287] [cursor=pointer]':
+          - generic [ref=e288]:
+            - img [ref=e290]
+            - img [ref=e293]
+          - generic [ref=e295]: Think
+          - generic [ref=e297]: "The user typed `/lark setup`. This looks like a slash command for setting up the Lark (Feishu) bridge. Let me check the current context - I'm in a working directory `/Users/zqy/Developer/dsh-lark-link` which seems to be a DSH (DeepSeek Harness) project with a Lark/Feishu link."
+        - status [ref=e298]: Deep diving...
+      - generic [ref=e128]:
+        - textbox "给智能体发消息" [active] [ref=e299]
+        - generic [ref=e132]:
+          - generic [ref=e133]:
+            - button "命令" [ref=e134] [cursor=pointer]:
+              - img [ref=e135]
+            - button "访问模式，当前：Workspace Write" [ref=e139] [cursor=pointer]:
+              - img [ref=e141]
+              - generic [ref=e147]: Workspace Write
+              - img [ref=e149]
+          - generic [ref=e151]:
+            - button "选择模型，当前 DeepSeek-V4-Flash，推理等级 High" [ref=e154] [cursor=pointer]:
+              - generic [ref=e155]: DeepSeek-V4-Flash
+              - generic [ref=e156]: High
+              - img [ref=e157]
+            - button "停止生成" [ref=e300] [cursor=pointer]:
+              - img [ref=e160]
+  - generic [ref=e163]:
+    - generic [ref=e164]:
+      - generic: 详情
+      - button "关闭详情" [ref=e165] [cursor=pointer]:
+        - img [ref=e166]
+    - generic [ref=e168]:
+      - generic: 点击消息流中的工具行查看详情

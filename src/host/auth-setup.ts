@@ -10,6 +10,7 @@
 
 import type { Logger } from "../common/logger.ts";
 import type { LarkDomain, LarkCredentials } from "./lark-client.ts";
+import { gzipSync } from "node:zlib";
 
 /** registerApp addons payload (the launcher applies these when creating the app). */
 export interface SetupAddons {
@@ -108,5 +109,193 @@ export function createAuthSetup(deps: AuthSetupDeps): AuthSetup {
 			opts.onStatusChange?.("完成 ✅");
 			return { appId, appSecret, domain };
 		},
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Fetch-based registerApp (device-code flow) — replaces the SDK's registerApp.
+// The SDK's defaultHttpInstance uses axios, whose 1.19.x `default.default`
+// entry (index.js → lib/axios.js) mis-resolves platform in Node ESM and
+// drives https URLs through http.request → "Protocol \"https:\" not
+// supported. Expected \"http:\"" under Node ≥18. The flow below replicates
+// the SDK wire protocol (RFC 8628 device code) with the global fetch.
+// ---------------------------------------------------------------------------
+
+/** base64url(gzip(addons)) — matches the SDK's encodeAddons encoding. */
+export function encodeAddons(addons: SetupAddons): string {
+	const json = JSON.stringify(addons);
+	return gzipSync(Buffer.from(json, "utf8"))
+		.toString("base64")
+		.replace(/\+/g, "-")
+		.replace(/\//g, "_")
+		.replace(/=+$/, "");
+}
+
+async function postForm(
+	url: string,
+	params: Record<string, string>,
+	signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+	let res: Response;
+	try {
+		res = await fetch(url, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/x-www-form-urlencoded",
+				Accept: "application/json",
+				"User-Agent": "dsh-lark-link (device-code client)",
+			},
+			body: new URLSearchParams(params).toString(),
+			signal,
+		});
+	} catch (err) {
+		throw new Error(
+			`registration request failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+	let data: Record<string, unknown>;
+	try {
+		data = (await res.json()) as Record<string, unknown>;
+	} catch {
+		data = {};
+	}
+	// The device-code flow reports in-band errors via HTTP 400 bodies — surface
+	// them (like the SDK's axios path), not as transport failures.
+	if (!res.ok && !data.error) {
+		throw new Error(`registration request failed: HTTP ${res.status}`);
+	}
+	return data;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) return reject(new Error("Registration was aborted"));
+		const timer = setTimeout(() => {
+			cleanup();
+			resolve();
+		}, ms);
+		const onAbort = (): void => {
+			cleanup();
+			reject(new Error("Registration was aborted"));
+		};
+		const cleanup = (): void => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+/**
+ * registerApp implementation over global fetch. Wire protocol mirrors
+ * @larksuiteoapi/node-sdk's registerApp (device-code flow against
+ * accounts.feishu.cn / accounts.larksuite.com), so the QR and created-app
+ * payload are byte-compatible with the SDK path.
+ */
+export function registerAppWithFetch(): RegisterAppFn {
+	return async (options) => {
+		const { source, signal, onQRCodeReady, onStatusChange, addons } = options;
+		const baseUrl = "https://accounts.feishu.cn";
+		const larkBaseUrl = "https://accounts.larksuite.com";
+		const endpoint = "/oauth/v1/app/registration";
+
+		const beginRes = await postForm(
+			baseUrl + endpoint,
+			{
+				action: "begin",
+				archetype: "PersonalAgent",
+				auth_method: "client_secret",
+				request_user_info: "open_id",
+			},
+			signal,
+		);
+		const verificationUri = beginRes.verification_uri_complete;
+		if (typeof verificationUri !== "string" || verificationUri === "") {
+			throw new Error(
+				(beginRes.error_description as string) ??
+					"registerApp begin 未返回 verification_uri_complete",
+			);
+		}
+		let qrUrl: URL;
+		try {
+			qrUrl = new URL(verificationUri);
+		} catch {
+			throw new Error(
+				`registerApp begin 返回了无效的 verification_uri_complete: ${verificationUri.slice(0, 80)}`,
+			);
+		}
+		qrUrl.searchParams.set("from", "sdk");
+		qrUrl.searchParams.set("source", `node-sdk/${source}`);
+		qrUrl.searchParams.set("tp", "sdk");
+		if (addons) qrUrl.searchParams.set("addons", encodeAddons(addons));
+
+		onQRCodeReady({
+			url: qrUrl.toString(),
+			expireIn: (beginRes.expires_in as number | undefined) ?? 600,
+		});
+
+		// Poll for the scan (RFC 8628 device-code flow).
+		const deviceCode = beginRes.device_code as string | undefined;
+		if (!deviceCode) throw new Error("registerApp begin 未返回 device_code");
+		let currentBase = baseUrl;
+		let interval = ((beginRes.interval as number | undefined) ?? 5) * 1000;
+		const deadline = Date.now() + ((beginRes.expires_in as number | undefined) ?? 600) * 1000;
+		let domainSwitched = false;
+
+		while (Date.now() < deadline) {
+			if (signal?.aborted) throw new Error("Registration was aborted");
+			const pollRes = await postForm(
+				currentBase + endpoint,
+				{ action: "poll", device_code: deviceCode },
+				signal,
+			);
+			const userInfo = pollRes.user_info as
+				| { tenant_brand?: string }
+				| undefined;
+			// Lark (international) domain switch — once only, like the SDK.
+			if (userInfo?.tenant_brand === "lark" && !domainSwitched) {
+				currentBase = larkBaseUrl;
+				domainSwitched = true;
+				onStatusChange?.({ status: "domain_switched" });
+				continue;
+			}
+			const clientId = pollRes.client_id as string | undefined;
+			const clientSecret = pollRes.client_secret as string | undefined;
+			if (clientId && clientSecret) {
+				return {
+					client_id: clientId,
+					client_secret: clientSecret,
+					user_info: userInfo,
+				};
+			}
+			switch (pollRes.error) {
+				case "authorization_pending":
+					onStatusChange?.({ status: "polling" });
+					break;
+				case "slow_down":
+					interval += 5000;
+					onStatusChange?.({
+						status: "slow_down",
+						interval: interval / 1000,
+					} as unknown as { status?: string });
+					break;
+				case "access_denied":
+				case "expired_token":
+					throw new Error(
+						(pollRes.error_description as string | undefined) ??
+							`注册失败：${String(pollRes.error)}`,
+					);
+				default:
+					if (pollRes.error) {
+						throw new Error(
+							(pollRes.error_description as string | undefined) ??
+								`注册失败：${String(pollRes.error)}`,
+						);
+					}
+					break;
+			}
+			await sleep(interval, signal);
+		}
+		throw new Error("注册轮询超时（二维码已过期），请重新运行 /lark setup");
 	};
 }

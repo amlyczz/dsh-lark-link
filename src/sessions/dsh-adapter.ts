@@ -106,8 +106,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 	// keyBySession/route mapping stays consistent) but unique across runs, so
 	// agents.create never collides with a persisted log from a previous run.
 	// (Cross-restart history needs seed-based resume — follow-up.)
-	const runNonce = `${Date.now().toString(36)}${Math
-		.random()
+	const runNonce = `${Date.now().toString(36)}${Math.random()
 		.toString(36)
 		.slice(2, 6)}`;
 	const bridgeKey = (key: string): string =>

@@ -1,0 +1,84 @@
+- generic [ref=e4]:
+  - generic [ref=e7]:
+    - generic [ref=e8]:
+      - button "新建会话" [ref=e9] [cursor=pointer]:
+        - img [ref=e10]
+      - button "收起侧边栏" [ref=e31] [cursor=pointer]:
+        - img [ref=e32]
+    - button "新建会话" [ref=e34] [cursor=pointer]:
+      - img [ref=e35]
+      - generic [ref=e37]: 新会话
+    - generic [ref=e40]:
+      - generic [ref=e41]:
+        - generic [ref=e42]: 工作区
+        - generic [ref=e44]:
+          - button "搜索会话" [ref=e45] [cursor=pointer]:
+            - img [ref=e46]
+          - textbox "搜索会话…"
+        - generic [ref=e49]:
+          - button "视图选项" [ref=e51] [cursor=pointer]:
+            - img [ref=e52]
+          - button "添加工作区" [ref=e54] [cursor=pointer]:
+            - img [ref=e55]
+      - tree "会话" [ref=e60]:
+        - generic [ref=e61]:
+          - treeitem "dsh-lark-link" [expanded] [ref=e63] [cursor=pointer]:
+            - img [ref=e65]
+            - generic [ref=e69]: dsh-lark-link
+          - treeitem "新会话" [selected] [ref=e867] [cursor=pointer]:
+            - generic [ref=e869]: 新会话
+          - treeitem "Lark setup 3分钟" [ref=e944] [cursor=pointer]:
+            - generic [ref=e73]: Lark setup
+            - generic [ref=e74]: 3分钟
+          - treeitem "ARK setup 8分钟" [ref=e76] [cursor=pointer]:
+            - generic [ref=e78]: ARK setup
+            - generic [ref=e79]: 8分钟
+    - generic [ref=e80]:
+      - button "🪶Lark" [ref=e83] [cursor=pointer]
+      - button "设置" [ref=e86] [cursor=pointer]:
+        - generic [ref=e87]:
+          - img [ref=e88]
+          - generic [ref=e92]: 设置
+  - generic [ref=e875]:
+    - img
+    - generic [ref=e878]:
+      - img [ref=e880]
+      - generic [ref=e882]: 探索未至之境
+      - generic [ref=e883]: 预览版
+    - generic [ref=e884]:
+      - button "选择工作区" [ref=e885] [cursor=pointer]:
+        - img [ref=e886]
+        - generic [ref=e889]: dsh-lark-link
+        - img [ref=e890]
+      - button "标准模式" [ref=e894] [cursor=pointer]:
+        - img [ref=e895]
+        - text: 标准模式
+        - img [ref=e900]
+    - generic [ref=e904]:
+      - generic [ref=e906]:
+        - generic:
+          - mark: /lark
+          - text: setup
+        - textbox "描述你想要构建的内容" [active] [ref=e907]: /lark setup
+      - generic [ref=e908]:
+        - generic [ref=e909]:
+          - button "命令" [ref=e910] [cursor=pointer]:
+            - img [ref=e911]
+          - button "访问模式，当前：Workspace Write" [ref=e915] [cursor=pointer]:
+            - img [ref=e917]
+            - generic [ref=e923]: Workspace Write
+            - img [ref=e925]
+        - generic [ref=e927]:
+          - button "选择模型，当前 DeepSeek-V4-Flash，推理等级 High" [ref=e930] [cursor=pointer]:
+            - generic [ref=e931]: DeepSeek-V4-Flash
+            - generic [ref=e932]: High
+            - img [ref=e933]
+          - button "发送消息" [disabled] [ref=e935]:
+            - img [ref=e936]
+  - generic [ref=e938]:
+    - generic [ref=e939]:
+      - generic: 详情
+      - button "关闭详情" [ref=e940] [cursor=pointer]:
+        - img [ref=e941]
+    - generic [ref=e943]:
+      - generic: 点击消息流中的工具行查看详情

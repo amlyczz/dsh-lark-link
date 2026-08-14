@@ -46,7 +46,7 @@ import { createLogger, type Logger } from "./common/logger.ts";
 import { createDedupeStore } from "./common/dedupe-store.ts";
 import { createQuotaGovernor } from "./common/quota-governor.ts";
 import { helpCard } from "./presentation/cards.ts";
-import { createAuthSetup } from "./host/auth-setup.ts";
+import { createAuthSetup, registerAppWithFetch } from "./host/auth-setup.ts";
 import {
 	resolveCredentials,
 	persistCredentials,
@@ -418,6 +418,12 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				await sender.replyTo(msg, "已停止当前会话任务");
 				return true;
 			}
+			case "lark": {
+				// Feishu-side /lark subcommands — same executor as the DSH command.
+				const sub = _rawInput.trim().split(/\s+/)[0] ?? "";
+				await sender.replyTo(msg, await runLarkSubcommand(sub.toLowerCase()));
+				return true;
+			}
 			default:
 				return false;
 		}
@@ -695,15 +701,50 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		name: string,
 		description: string,
 		handler: (rawInput: string) => Promise<string>,
+		inputHint?: string,
 	): void => {
 		commandsCtx.commands?.register?.({
 			name,
 			description,
+			// input hint is REQUIRED for the DSH web composer to execute a
+			// command with arguments: ui-commands' matchEnter returns a claim
+			// only when desc.input is defined, otherwise a non-bare slash line
+			// (/lark setup) falls through to the agent as a plain message.
+			...(inputHint !== undefined ? { input: { hint: inputHint } } : {}),
 			handler: async (inv: { rawInput?: string }) => ({
 				kind: "success",
 				text: await handler(inv?.rawInput ?? ""),
 			}),
 		});
+	};
+	// Shared /lark subcommand executor — used by the DSH command (/lark x) AND
+	// the Feishu-side route (/lark x in chat). startBridge/stopBridge/runSetup
+	// are resolved at call time (all initialized before any message arrives).
+	const runLarkSubcommand = async (sub: string): Promise<string> => {
+		switch (sub) {
+			case "status":
+				return formatStatusLine(status.get());
+			case "start":
+				await startBridge();
+				return lifecycleStarted
+					? "bridge started"
+					: (startBlocker ?? "bridge 未启动");
+			case "stop":
+				await stopBridge();
+				return "bridge stopped";
+			case "restart":
+				await stopBridge();
+				await startBridge();
+				return lifecycleStarted
+					? "bridge restarted"
+					: (startBlocker ?? "bridge 未启动");
+			case "setup":
+				return await runSetup();
+			case "uninstall-clean":
+				return await runUninstallClean();
+			default:
+				return "Lark Link 用法：/lark setup | start | stop | restart | status | uninstall-clean";
+		}
 	};
 	// Single /lark command with subcommand dispatch (DSH command names can't
 	// contain spaces — the space separates name from input — so /lark setup is
@@ -711,33 +752,11 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	registerCmd(
 		"lark",
 		"Lark Link bridge — usage: /lark setup|start|stop|restart|status|uninstall-clean",
-		async (rawInput) => {
-			const sub = (rawInput.trim().split(/\s+/)[0] ?? "").toLowerCase();
-			switch (sub) {
-				case "status":
-					return formatStatusLine(status.get());
-				case "start":
-					await startBridge();
-					return lifecycleStarted
-						? "bridge started"
-						: (startBlocker ?? "bridge 未启动");
-				case "stop":
-					await stopBridge();
-					return "bridge stopped";
-				case "restart":
-					await stopBridge();
-					await startBridge();
-					return lifecycleStarted
-						? "bridge restarted"
-						: (startBlocker ?? "bridge 未启动");
-				case "setup":
-					return await runSetup();
-				case "uninstall-clean":
-					return await runUninstallClean();
-				default:
-					return "Lark Link 用法：/lark setup | start | stop | restart | status | uninstall-clean";
-			}
-		},
+		async (rawInput) =>
+			runLarkSubcommand(
+				(rawInput.trim().split(/\s+/)[0] ?? "").toLowerCase(),
+			),
+		"setup|start|stop|restart|status|uninstall-clean",
 	);
 
 	const runSetup = async (): Promise<string> => {
@@ -761,16 +780,19 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		// going to host stdout. So: run registerApp detached in the background
 		// (persists creds on scan), surface the QR URL to the GUI as soon as
 		// onQRCodeReady fires, and return immediately.
-		const lark = await import("@larksuiteoapi/node-sdk");
 		let qrInfo: { url: string; expireIn: number } | undefined;
 		void (async () => {
-			const setup = createAuthSetup({
-				registerApp: lark.registerApp,
-				persist: async (c) => {
-					await persistCredentials(credStore, ref, c);
-				},
-				logger,
-			});
+		const setup = createAuthSetup({
+			// SDK registerApp is broken under Node ESM: its axios 1.19.x
+			// `default.default` entry (index.js → lib/axios.js) drives https
+			// through http.request → "Protocol \"https:\" not supported".
+			// Use the fetch-based implementation of the same device-code flow.
+			registerApp: registerAppWithFetch(),
+			persist: async (c) => {
+				await persistCredentials(credStore, ref, c);
+			},
+			logger,
+		});
 			try {
 				const res = await setup.run({
 					onQRCodeReady(info) {

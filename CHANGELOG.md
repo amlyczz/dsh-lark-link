@@ -4,9 +4,11 @@
 
 对齐 pi-feishu-link 2026-08-14 实机修复轮：
 
+- **修复：DSH Web GUI 中输入 `/lark setup` 被当普通消息交给模型**（实测根因）。ui-commands 的 `matchEnter` 只对定义了 `input` 的命令执行带参命令，否则非裸斜杠行回落到 agent。`lark` 命令现注册 `input: { hint }`；同时飞书侧 `/lark` 子命令补上分发（bridgeHandler 原缺 `lark` case）
+- **修复：`/lark setup` 的 registerApp 报 `Protocol "https:" not supported. Expected "http:"`**。SDK 的 `defaultHttpInstance` 用 axios，其 1.19.x 的 `exports.default.default → index.js`（lib 源码入口）在 Node ESM 下平台解析错位，把 https 请求赶进 `http.request`。改用 fetch 实现的同协议 registerApp（device-code 流程，RFC 8628：begin → QR → poll），二维码/addons 编码与 SDK 字节兼容
 - **修复：桥 agent 无 provider/model → 每轮 turn 报错、飞书无回复**（实测根因）。桥创建的 DSH agent 直接调 `ctx.agents.create({sessionId})` 未携带默认模型；真实 harness 中 `agentDefaultModel` 服务由 headless/gateway 等入口层消费，不会自动注入到裸 create。现在 adapter 像 dsh-headless 一样：读取 `agentDefaultModel.currentSelection()` → 传 `agentOptions:{provider,model}` → `setup` 里 `installModelSelection`（request-waterfall 级联）。无该服务时告警提示
 - **修复：turn-supervisor watchdog 从未 arm**（`turn/start` 未映射 → `arm()` 死代码）。`SessionEventOut` 增加 `turn/start`，adapter 映射该事件，host 在 `onEvent` 里 arm
-- 新增测试：adapter 默认模型注入矩阵（有/无 agentDefaultModel → create 参数）、turn/start 事件映射、assistant 文本提取（+4 项，共 118 项）
+- 新增测试：adapter 默认模型注入矩阵（有/无 agentDefaultModel → create 参数）、turn/start 事件映射、assistant 文本提取、fetch registerApp 全流程（begin→QR→poll→凭据）/中止（+7 项，共 121 项）
 - 卡片 schema 2.0 按钮规范：按钮平铺 `body.elements`（`width:"fill"` 防截断），回传用 `behaviors:[{type:"callback",value}]`，**移除 tag:"action" 容器**（飞书 ErrCode 200861）；卡片 action 事件接入桥命令路由（`card.action.trigger` → op 分发）
 - **上传返回双形状兼容**：`uploadFile`/`uploadImage` 同时解析真实 SDK 顶层 `file_key`/`image_key` 与旧 `{data:{...}}` 包裹（`extractUploadKey`）
 - `/support` → `/doctor` 改名（旧名保留兼容）；诊断/帮助文案同步
