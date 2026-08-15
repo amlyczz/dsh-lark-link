@@ -145,6 +145,13 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 	const keyBySession = new Map<string, string>();
 	const listeners = new Map<string, Set<(e: SessionEventOut) => void>>();
 	const disposers = new Map<string, () => void>();
+	// Per-key in-flight agent creation. ensureAgent(key) can be called
+	// concurrently (an outbox outbound re-reply racing a live inbound message
+	// right after a DSH restart). Both calls would otherwise see an empty
+	// `tracked`, both call agents.create with the SAME stable sessionId, and
+	// the losing call hits "session … already exists" — minting a duplicate
+	// agent and mutating the global runNonce. Collapse them into one creation.
+	const ensureInFlight = new Map<string, Promise<AgentHandle>>();
 
 	// Per-run session nonce: session ids are stable within a run (so the
 	// keyBySession/route mapping stays consistent) but unique across runs, so
@@ -165,6 +172,19 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			existing.lastUsedAt = Date.now();
 			return existing.handle;
 		}
+		// Collapse concurrent ensureAgent(key) calls into a single creation:
+		// the second caller awaits the same in-flight promise instead of racing
+		// a duplicate agents.create (see ensureInFlight above).
+		const inFlight = ensureInFlight.get(key);
+		if (inFlight) {
+			return inFlight.then((h) => {
+				const t = tracked.get(key);
+				if (t) t.lastUsedAt = Date.now();
+				return h;
+			});
+		}
+
+		const p = (async (): Promise<AgentHandle> => {
 
 		let sessionId = bridgeKey(key);
 		let owned: AgentHandleSurface;
@@ -385,15 +405,24 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 					.toString(36)
 					.slice(2, 6)}`;
 				const freshId = bridgeKey(key);
-				owned = await c.agents.create({
-					sessionId: freshId,
-					meta: {
-						cwd: deps.cwd?.() ?? process.cwd(),
-						agentPreset: deps.preset?.() ?? "ptc",
-					},
-					...(agentOptions ? { agentOptions } : {}),
-					setup,
-				});
+				try {
+					owned = await c.agents.create({
+						sessionId: freshId,
+						meta: {
+							cwd: deps.cwd?.() ?? process.cwd(),
+							agentPreset: deps.preset?.() ?? "ptc",
+						},
+						...(agentOptions ? { agentOptions } : {}),
+						setup,
+					});
+				} catch (err2) {
+					// The re-try also failed (e.g. a leftover freshId collision).
+					// Surface a clear error instead of a raw "already exists"
+					// escaping and killing the inbound handler.
+					throw new Error(
+						`failed to mint fresh session for ${key} (was "${sessionId}"): ${err2 instanceof Error ? err2.message : String(err2)}`,
+					);
+				}
 				// The fresh session has a new id — subsequent wiring (handle
 				// sessionId, keyBySession) must use it, not the collided id.
 				sessionId = freshId;
@@ -532,7 +561,14 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		);
 		disposers.set(key, errDisp);
 
-		return handle;
+			return handle;
+		})();
+		ensureInFlight.set(key, p);
+		try {
+			return await p;
+		} finally {
+			ensureInFlight.delete(key);
+		}
 	}
 
 	return {

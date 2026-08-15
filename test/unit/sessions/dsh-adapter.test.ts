@@ -330,3 +330,59 @@ test("adapter: listPresets falls back to empty when agentPresets service is abse
 	const withFailure = mkBackend(ctxOf(registry, undefined, failing));
 	assert.deepEqual(await withFailure.listPresets(), []);
 });
+
+test("adapter: concurrent ensureAgent on the same key collapses into ONE agent (no already-exists race)", async () => {
+	const registry = fakeRegistry();
+	const ctx = ctxOf(registry, undefined);
+	// Stable persisted runNonce — both concurrent calls compute the SAME
+	// sessionId, which is exactly the pre-race condition from the issue.
+	const backend = mkBackend(ctx, undefined, "rRace123");
+
+	// Two near-simultaneous ensureAgent calls on the same key. This mirrors an
+	// outbox re-reply racing a live inbound message right after a dsh restart —
+	// before the fix, the losing call re-entered agents.create on the same id
+	// and hit "session … already exists".
+	const [a, b] = await Promise.all([
+		backend.ensureAgent("dm:ou_race"),
+		backend.ensureAgent("dm:ou_race"),
+	]);
+
+	// Both callers must get the SAME agent: one create, one session, no leak.
+	assert.equal(registry.created.length, 1, "exactly one agents.create");
+	assert.equal(a.sessionId, b.sessionId, "same session for both callers");
+	assert.equal(a.agentId, b.agentId, "same agent for both callers");
+	assert.equal(
+		backend.get("dm:ou_race")?.agentId,
+		a.agentId,
+		"tracked handle is the shared created agent",
+	);
+});
+
+test("adapter: concurrent create-collision still mints a fresh session and never throws the raw already-exists", async () => {
+	// A registry whose create ALWAYS reports "already exists" (nothing is ever
+	// creatable). ensureAgent must go collision → mint-fresh → and surface a
+	// WRAPPED, clearly-labeled error instead of the raw "session … already
+	// exists" escaping out to kill the inbound handler (issue symptom).
+	const alwaysCollide = {
+		agents: new Map<string, unknown>(),
+		async create() {
+			throw new Error('session "x" already exists');
+		},
+		resume() {
+			throw new Error("unused");
+		},
+		get() {
+			return undefined;
+		},
+	} as unknown as ReturnType<typeof fakeRegistry>;
+	const ctx = ctxOf(alwaysCollide, undefined);
+	const backend = mkBackend(ctx, undefined, "rRace999");
+
+	await assert.rejects(
+		() => backend.ensureAgent("dm:ou_bad"),
+		(err: unknown) =>
+			err instanceof Error &&
+			err.message.includes("failed to mint fresh session"),
+		"collision re-try failure must be wrapped, not raw already-exists",
+	);
+});
