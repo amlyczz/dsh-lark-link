@@ -13,6 +13,7 @@ import {
 	errorCard,
 	button,
 	modeCard,
+	questionCard,
 } from "../../../src/presentation/cards.ts";
 
 type Json = Record<string, unknown>;
@@ -141,4 +142,51 @@ test("modeCard 渲染动态名单（含自定义与不可用标注）", () => {
 	assert.ok(text.includes("AAA 模式（自定义） ← 当前"), "自定义模式应标注并高亮当前");
 	assert.ok(text.includes("（不可用：示例原因）"), "broken 模式应标注不可用原因");
 	assert.ok(!text.includes("standard（自定义）"), "官方模式不应标自定义");
+});
+
+test("questionCard 单选：每选项一个按钮，op 形如 uqa:<id>:<index>", () => {
+	const card = questionCard({
+		id: "q1",
+		question: "请选择",
+		options: [{ label: "A" }, { label: "B" }],
+	}) as Json;
+	const body = card.body as Json;
+	const buttons = collectButtons(body);
+	const ops = buttons.map(
+		(b) => (b.behaviors as Array<{ value: Json }>)[0]!.value.op as string,
+	);
+	assert.deepEqual(ops, ["uqa:q1:0", "uqa:q1:1"]);
+});
+
+test("questionCard 多选：form_container + multi_select_static + 提交/onSubmit 只能一次", () => {
+	const card = questionCard({
+		id: "q9",
+		question: "可多选",
+		options: [{ label: "X" }, { label: "Y" }, { label: "Z" }],
+		multiSelect: true,
+	}) as Json;
+	assert.equal(card.schema, "2.0");
+	const body = card.body as Json;
+	const elements = body.elements as Json[];
+	const form = elements.find((e) => e.tag === "form_container") as
+		| Json
+		| undefined;
+	assert.ok(form, "多选应包含 form_container");
+	const children = (form!.children ?? []) as Json[];
+	const select = children.find((c) => c.tag === "multi_select_static") as
+		| Json
+		| undefined;
+	assert.ok(select, "form_container 内应有 multi_select_static");
+	assert.equal(select!.name, "answer");
+	const opts = (select!.options ?? []) as Array<{ value: string }>;
+	assert.deepEqual(
+		opts.map((o) => o.value),
+		["0", "1", "2"],
+		"选项值应为 stringified 索引",
+	);
+	const onSubmit = (form!.onSubmit ?? []) as Array<{ type: string; value: Json }>;
+	assert.equal(onSubmit[0]?.type, "callback");
+	assert.equal(onSubmit[0]?.value?.op, "uqam:q9");
+	// 多选卡片不应有立即提交的单选项按钮
+	assert.equal(collectButtons(body).length, 0, "多选不渲染立即提交按钮");
 });

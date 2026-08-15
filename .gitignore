@@ -25,3 +25,9 @@ Thumbs.db
 # research/ is private local material (surveys + cloned reference repos) — never published
 research/
 .playwright-mcp/
+
+# ad-hoc local scratch scripts (vision/OCR probes, throwaway tools) — never publish
+.vision.*.mjs
+.*.tmp.mjs
+.tmp*/
+

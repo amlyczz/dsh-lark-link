@@ -126,7 +126,26 @@ export function createConnectionSupervisor(
 	}
 
 	async function tick(): Promise<void> {
-		if (stopped || state === "quarantined") return;
+		if (stopped) return;
+		// Quarantine auto-recovery: once the quota window resets (resetAt passes),
+		// lift the breaker and try to reconnect — no manual /lark restart needed.
+		if (state === "quarantined") {
+			// liftAt === undefined means all failure records have aged out of the
+			// quota window — the breaker has implicitly reset. Either way,
+			// recover once the quarantine window has passed.
+			const liftAt = deps.quota.resetAt();
+			const windowPassed = liftAt === undefined || now() >= liftAt;
+			if (windowPassed) {
+				deps.logger?.info("quota window reset — auto-recovering from quarantine");
+				deps.quota.reset();
+				reconnectAttempts = 0;
+				// Clear the quarantine flag BEFORE ensureConnected, else its
+				// `state === "quarantined"` guard would return without trying.
+				if (state === "quarantined") state = "reconnecting";
+				await ensureConnected();
+			}
+			return;
+		}
 		// Probe over REST (independent of WS health).
 		let ok = false;
 		try {

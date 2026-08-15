@@ -116,6 +116,9 @@ export interface BridgeStatus {
   lastProbeOk?: boolean;
   outboxPending: number;
   outboxFailed: number;
+  /** Accepted-but-undelivered inbound requests awaiting (possible) replay — a
+   *  crash/restart mid-turn re-triggers these. Zero when everything answered. */
+  inboundPending: number;
   sessions: number;
   quarantinedUntil?: number;
   quarantinedReason?: string;

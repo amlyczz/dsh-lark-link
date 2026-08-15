@@ -1,6 +1,6 @@
 {
   "name": "dsh-lark-link",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "High-reliability Feishu/Lark bridge for DeepSeek Harness — QR one-click auth, multi-mode agents, card-based commands, zero-loss outbox, media in/out, session logs, reusable DSH Web GUI",
   "type": "module",
   "license": "MIT",

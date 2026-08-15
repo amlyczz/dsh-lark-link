@@ -86,3 +86,40 @@ test("cardkit: throttles patches to printFrequencyMs", async () => {
   const patchCalls = calls.filter((c) => c.op === "patch");
   assert.equal(patchCalls.length, 1);
 });
+
+test("cardkit: finalize RE-THROWS when the final content PUT fails (caller falls back to outbox)", async () => {
+  const api = {
+    async createCard(payload: unknown) {
+      return { card_id: "card-9" };
+    },
+    async patchCard() {
+      return {};
+    },
+    async updateCard() {
+      throw new Error("final PUT failed");
+    },
+  };
+  let onError: unknown;
+  const stream = createCardKitStream({ api, onError: (e) => (onError = e) });
+  await stream.patch("content"); // create streaming card → cardId set
+  await assert.rejects(() => stream.finalize("full text"), /final PUT failed/);
+  assert.ok(onError, "error surfaced via onError");
+  assert.equal(stream.disposed, true, "stream disposed so it can be rebuilt as outbox text");
+});
+
+test("cardkit: finalize RE-THROWS when no card exists and plain create fails", async () => {
+  const api = {
+    async createCard() {
+      throw new Error("create failed");
+    },
+    async patchCard() {
+      return {};
+    },
+    async updateCard() {
+      return {};
+    },
+  };
+  const stream = createCardKitStream({ api });
+  // No patch() was ever called → cardId is undefined → finalize does a plain create.
+  await assert.rejects(() => stream.finalize("x"), /create failed/);
+});

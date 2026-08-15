@@ -21,6 +21,8 @@
 
 > 全网统一昵称：**小斯syzs** · B站 [@小斯syzs](https://space.bilibili.com/390211071) · 抖音 · 小红书 · 快手（全网同名）
 
+> 💬 **小斯syzs 邀请你加入飞书群** —— [点此一键加入](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=392u206d-9072-4d73-b6ea-8eb93adcc699)
+
 **DeepSeek Harness × 飞书/Lark 双向桥接插件** —— 把你的 DSH 智能体（DeepSeek Harness）装进飞书：扫码 30 秒上线、消息零丢失、卡片化交互、每飞书会话独立 Agent。
 
 ## ✨ 特性
@@ -34,6 +36,7 @@
 | 💬 **意图确认转发** | 模型提问（`ask_user_question`）→ **飞书意图确认卡片**（选项按钮 + 自定义输入），答完模型继续，飞书里完成完整交互闭环 |
 | 😊 **表情回执** | 收到消息随机表情"已收到"；回复完成 / 命令完成打 **DONE ✅**（只使用飞书实测有效 emoji） |
 | 💪 **消息零丢失** | 持久 Outbox（JSONL + at-least-once + 幂等键 + 分航道并行 + 失败离队不阻塞），kill 重启自动续投 |
+| 🆕 **入站请求补发** | Agent **处理到一半**插件/dsh 崩溃/重启，重启后自动重新触发这条用户消息（不再静默丢请求）——Inbound WAL 持久化 + 启动对账 + 次数上限/时间窗防空转；`/status` 显示待补发条数 |
 | 🛡 **连接自愈** | probe 驱动受控重连 + QuotaGovernor 配额熔断 + 断连补偿；环境代理自动规避 |
 | 🔀 **命令三级分流** | 桥特有命令桥处理；DSH 注册命令原生执行；`/goal`、未知 `/xxx`、普通消息原样注入 Agent（无拦截无门禁）；**skill 无前缀**——直接描述任务，模型自动加载 |
 | 📎 **入站多媒体** | 飞书图片 → **视觉模型看图**（attachment 存储）；文件 → 有界文本提取进提示词 |
@@ -112,6 +115,12 @@ npm pack           # 产出可分发 tarball
 **架构**：桥 = Cordis 插件（`dsh.bundle` 格式），分层清晰：
 `host`（SDK 适配/认证）→ `inbound`（传输/群触发/断连补偿）→ `application`（命令路由/消息编排/诊断）→ `outbound`（Outbox/事件转发/卡片）→ `sessions`（每会话 Agent 管理）。
 
+## 💬 加入飞书群
+
+**小斯syzs 邀请你加入飞书群**，可以交流使用问题、反馈建议、一起玩 DSH × 飞书：
+
+👉 [https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=392u206d-9072-4d73-b6ea-8eb93adcc699](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=392u206d-9072-4d73-b6ea-8eb93adcc699)
+
 ## 📄 许可
 
 MIT — 自由使用、修改、分发。
@@ -137,6 +146,7 @@ MIT — 自由使用、修改、分发。
 | 💬 **Intent confirmation** | Model questions (`ask_user_question`) land as **Feishu intent-confirmation cards** (option buttons + custom text); answer and the agent resumes |
 | 😊 **Reaction receipts** | Random "got it" reaction on inbound; **DONE ✅** on completion (only Feishu-validated emojis) |
 | 💪 **Zero message loss** | Persistent Outbox (JSONL + at-least-once + idempotency + per-lane parallel + failure quarantine), resumes after kill/restart |
+| 🆕 **Inbound request replay** | If the agent dies / plugin reloads / dsh restarts MID-TURN, the interrupted user message is auto re-triggered on boot (no more silently dropped requests) — durable Inbound WAL + boot reconciliation + attempt/time caps; `/status` shows the pending-replay count |
 | 🛡 **Self-healing connection** | Probe-driven controlled reconnect + QuotaGovernor circuit breaker + missed-message compensation; auto-avoids proxy env |
 | 🔀 **3-tier command routing** | Bridge commands → bridge; DSH commands → native; `/goal`, unknown `/xxx`, plain text → injected verbatim (no gates). **Skills need no prefix** — just describe the task |
 | 📎 **Inbound media** | Feishu images → **visual model** (attachment-backed); files → bounded text extraction |
@@ -174,6 +184,12 @@ Open Feishu, find your bot, send anything — reaction receipt + full reply = en
 ```bash
 npm run dev:link && npm run check && npm test && npm run build
 ```
+
+## 💬 Join the Feishu group
+
+**小斯syzs** invites you to join the Feishu group — ask questions, share feedback, and play with DSH × Feishu together:
+
+👉 [https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=392u206d-9072-4d73-b6ea-8eb93adcc699](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=392u206d-9072-4d73-b6ea-8eb93adcc699)
 
 ## 📄 License
 

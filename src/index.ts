@@ -44,6 +44,7 @@ import { createStatusStore } from "./common/connection-status.ts";
 import { createConfigStore, HOT_RELOADABLE } from "./common/config.ts";
 import { createLogger, type Logger } from "./common/logger.ts";
 import { createDedupeStore } from "./common/dedupe-store.ts";
+import { createInboundWal } from "./inbound/inbound-wal.ts";
 import { createQuotaGovernor } from "./common/quota-governor.ts";
 import {
 	helpCard,
@@ -122,6 +123,11 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	const status = createStatusStore(join(dir, "status.json"));
 	const routeStore = createRouteStore(join(dir, "routes.json"));
 	const dedupe = createDedupeStore(join(dir, "dedupe.jsonl"));
+	// Durable inbound-request journal (入站请求补发). Records agent-bound text
+	// requests before enqueue; on boot, accepted-but-undelivered requests are
+	// re-dispatched so a crash/plugin-reload/dsh-restart mid-turn doesn't drop
+	// the user's message. Persists in <state>/inbound-wal/.
+	const inboundWal = createInboundWal({ dir: join(dir, "inbound-wal") });
 	const getCfg = (): ReturnType<typeof configStore.get> => configStore.get();
 
 	// ---- permission default sync ---------------------------------------------
@@ -476,6 +482,15 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		dir: join(dir, "outbox"),
 		sender: outboxSender,
 		cfg: getCfg().outbox,
+		// Live outbox counters → status, so /status (and the Web panel) reflect
+		// pending/failed in real time instead of only on startup / timers.
+		onStatsChange: (stats) => {
+			try {
+				status.refreshCounters({ outboxPending: stats.pending, outboxFailed: stats.failed });
+			} catch {
+				// best-effort
+			}
+		},
 	});
 
 	// ---- forwarder / compensation / trigger / diagnostics --------------------
@@ -513,6 +528,16 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			};
 		},
 		cfg: () => ({ streamingEnabled: getCfg().streaming.enabled }),
+		// Durable output enqueued → the triggering user request has been
+		// answered, so it won't be re-triggered after a crash. Best-effort.
+		onDelivered: (sessionKey) => {
+			try {
+				const route = routeStore.get(sessionKey);
+				if (route?.lastMessageId) inboundWal.delivered(route.lastMessageId);
+			} catch {
+				// swallow — WAL failures never break delivery
+			}
+		},
 	});
 	const groupTrigger = createGroupTrigger({
 		cfg: () => ({
@@ -669,6 +694,34 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		},
 	};
 
+	// ---- durable command reply (入站请求补发 / 命令回复可靠化) ----------------
+	// Bridge-command replies (status/help/sessions/workspace/lark-config/mode/
+	// permission/model/new/stop/…) go through the DURABLE outbox (command-reply
+	// kind), same as DSH-registered command replies — so a bridge reply in
+	// flight when the process dies / plugin reloads still gets delivered on the
+	// next boot. Idempotent per trigger message (no duplicates after replay).
+	const durableReply = async (
+		cmdName: string,
+		msg: FeishuInboundMessage,
+		textOrCard: string | unknown,
+	): Promise<void> => {
+		const key = bridge.conversationKeyFor(msg);
+		await outbox.enqueue({
+			dedupeKey: `bridge:${cmdName}:${msg.messageId}`,
+			laneKey: key,
+			route: {
+				sessionKey: key,
+				chatId: msg.chatId,
+				chatType: msg.chatType,
+			},
+			kind: "command-reply",
+			payload:
+				typeof textOrCard === "string"
+					? { kind: "text", text: textOrCard }
+					: { kind: "card", card: textOrCard as never },
+		});
+	};
+
 	const bridgeHandler = async (
 		name: string,
 		_rawInput: string,
@@ -676,7 +729,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	): Promise<boolean> => {
 		switch (name) {
 			case "status":
-				await sender.replyTo(
+				await durableReply(name, 
 					msg,
 					formatStatusLine(status.get()) +
 						"\n\n" +
@@ -688,7 +741,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// /lark-config key=value — hot reload (no value shows status).
 				const arg = _rawInput.trim();
 				if (!arg) {
-					await sender.replyTo(
+					await durableReply(name, 
 						msg,
 						formatStatusLine(status.get()) +
 							"\n\n" +
@@ -698,7 +751,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				}
 				const eq = arg.indexOf("=");
 				if (eq === -1) {
-					await sender.replyTo(
+					await durableReply(name, 
 						msg,
 						"用法：/lark-config key=value（可热改: " +
 							HOT_RELOADABLE.join(", ") +
@@ -709,7 +762,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				const key = arg.slice(0, eq).trim();
 				const rawVal = arg.slice(eq + 1).trim();
 				if (!HOT_RELOADABLE.includes(key as never)) {
-					await sender.replyTo(
+					await durableReply(name, 
 						msg,
 						`"${key}" 不可热改（可改: ${HOT_RELOADABLE.join(", ")}）`,
 					);
@@ -724,13 +777,13 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					configStore.update({ [key]: val } as never);
 					configStore.saveOverrides();
 				} catch (err) {
-					await sender.replyTo(
+					await durableReply(name, 
 						msg,
 						`更新失败: ${err instanceof Error ? err.message : String(err)}`,
 					);
 					return true;
 				}
-				await sender.replyTo(msg, `已更新 ${key}=${JSON.stringify(val)}`);
+				await durableReply(name, msg, `已更新 ${key}=${JSON.stringify(val)}`);
 				return true;
 			}
 			case "support":
@@ -789,7 +842,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						);
 					}
 				}
-				await sender.replyTo(msg, diag.text);
+				await durableReply(name, msg, diag.text);
 				return true;
 			}
 			case "sessions": {
@@ -798,19 +851,19 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				const lines = keys.length
 					? keys.map((k) => `- ${k}`)
 					: ["（无活跃会话）"];
-				await sender.replyTo(
+				await durableReply(name, 
 					msg,
 					`**会话列表 (${keys.length})**\n\n` + lines.join("\n"),
 				);
 				return true;
 			}
 			case "help":
-				await sender.replyTo(msg, helpCard());
+				await durableReply(name, msg, helpCard());
 				return true;
 			case "workspace": {
 				const arg = _rawInput.trim();
 				if (!arg) {
-					await sender.replyTo(
+					await durableReply(name, 
 						msg,
 						`工作区: ${getCfg().workspaceRoot || process.cwd()}`,
 					);
@@ -830,16 +883,16 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						: join(getCfg().workspaceRoot || process.cwd(), expanded),
 				);
 				if (!target.startsWith("/")) {
-					await sender.replyTo(msg, `无效路径: ${arg}`);
+					await durableReply(name, msg, `无效路径: ${arg}`);
 					return true;
 				}
 				try {
 					if (!statSync(target).isDirectory()) {
-						await sender.replyTo(msg, `不是有效目录: ${target}`);
+						await durableReply(name, msg, `不是有效目录: ${target}`);
 						return true;
 					}
 				} catch {
-					await sender.replyTo(msg, `目录不存在: ${target}`);
+					await durableReply(name, msg, `目录不存在: ${target}`);
 					return true;
 				}
 				configStore.update({ workspaceRoot: target });
@@ -852,7 +905,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// fresh runNonce so the next message opens a brand-new session
 				// under the new cwd, and the old row stays listed.
 				await conversations?.rotate(bridge.conversationKeyFor(msg));
-				await sender.replyTo(
+				await durableReply(name, 
 					msg,
 					`工作区已切换: ${target}\n当前会话已重置，下一条消息在新工作区生效（其他会话不受影响）。`,
 				);
@@ -861,7 +914,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			case "stop": {
 				const key = bridge.conversationKeyFor(msg);
 				await bridge.conversations?.stop(key);
-				await sender.replyTo(msg, "已停止当前会话任务");
+				await durableReply(name, msg, "已停止当前会话任务");
 				return true;
 			}
 			case "new": {
@@ -870,7 +923,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// message opens a NEW session row (never forwarded to the model).
 				const key = bridge.conversationKeyFor(msg);
 				await conversations?.rotate(key);
-				await sender.replyTo(
+				await durableReply(name, 
 					msg,
 					`已开启新会话（工作区: ${getCfg().workspaceRoot || process.cwd()}）。下一条消息开始全新上下文。`,
 				);
@@ -943,20 +996,20 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					model = (m ?? "").trim();
 				}
 				if (!provider || !model) {
-					await sender.replyTo(
+					await durableReply(name, 
 						msg,
 						"用法：/model <provider>/<model> 或 /model <model>",
 					);
 					return true;
 				}
 				if (!adm?.saveSelection) {
-					await sender.replyTo(msg, "模型切换服务不可用");
+					await durableReply(name, msg, "模型切换服务不可用");
 					return true;
 				}
 				try {
 					await adm.saveSelection({ provider, model });
 				} catch (err) {
-					await sender.replyTo(
+					await durableReply(name, 
 						msg,
 						`模型切换失败: ${err instanceof Error ? err.message : String(err)}`,
 					);
@@ -967,7 +1020,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// current session survives the switch.
 				liveModelSelection.provider = provider;
 				liveModelSelection.model = model;
-				await sender.replyTo(
+				await durableReply(name, 
 					msg,
 					`模型已切换: ${provider}/${model}\n当前会话下次回复生效（会话不中断）。`,
 				);
@@ -995,7 +1048,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					return true;
 				}
 				if (!roster.some((p) => p.id === arg)) {
-					await sender.replyTo(
+					await durableReply(name, 
 						msg,
 						`未知模式 ${arg}（可用: ${roster.map((p) => p.id).join(", ")}）`,
 					);
@@ -1012,7 +1065,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// content / id collision).
 				await conversations?.rotate(bridge.conversationKeyFor(msg));
 				const picked = roster.find((p) => p.id === arg);
-				await sender.replyTo(
+				await durableReply(name, 
 					msg,
 					`模式已切换为 ${picked?.label ?? arg}${
 						picked?.trust === "user" ? "（自定义）" : ""
@@ -1038,7 +1091,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					return true;
 				}
 				if (!PERMISSION_PRESETS.some((p) => p.id === arg)) {
-					await sender.replyTo(
+					await durableReply(name, 
 						msg,
 						`未知权限 ${arg}（可用: ${PERMISSION_PRESETS.map((p) => p.id).join(", ")}）`,
 					);
@@ -1086,13 +1139,13 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// Keep the DSH default in lockstep so NEW sessions inherit the
 				// switch too, not just this one.
 				syncDefaultPermission();
-				await sender.replyTo(msg, `权限已切换为 ${arg}`);
+				await durableReply(name, msg, `权限已切换为 ${arg}`);
 				return true;
 			}
 			case "lark": {
 				// Feishu-side /lark subcommands — same executor as the DSH command.
 				const sub = _rawInput.trim().split(/\s+/)[0] ?? "";
-				await sender.replyTo(msg, await runLarkSubcommand(sub.toLowerCase()));
+				await durableReply(name, msg, await runLarkSubcommand(sub.toLowerCase()));
 				return true;
 			}
 			default:
@@ -1128,7 +1181,40 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			const messageId = raw.message?.message_id ?? "";
 			if (!op) return;
 			// op may be "name" (bare command) or "name:input" (picker callback).
-			// "uqa:<questionId>:<optionIndex>" answers a pending intent question.
+			// Single-select answer: "uqa:<questionId>:<optionIndex>".
+			// Multi-select answer: form submit op "uqam:<questionId>" — the
+			// callback event carries action.formValue.answer (string[] of
+			// selected option values, i.e. stringified option indexes).
+			if (op.startsWith("uqam:")) {
+				const questionId = op.slice("uqam:".length);
+				const pending = pendingQuestions.get(questionId);
+				if (pending) {
+					clearTimeout(pending.timer);
+					pendingQuestions.delete(questionId);
+					const form = (raw as { action?: { formValue?: Record<string, unknown> } })
+						.action?.formValue;
+					const answer = form?.answer;
+					const selectedValues = Array.isArray(answer)
+						? answer.map((v) => String(v))
+						: typeof answer === "string" && answer
+							? [answer]
+							: [];
+					const selected = selectedValues.map((v) => {
+						const i = Number(v);
+						return Number.isInteger(i) && pending.options[i]
+							? pending.options[i].label
+							: v;
+					});
+					void sender
+						.sendText(pending.chatId, `已收到你的选择 ✅（${selected.join("、")}）`)
+						.catch(() => undefined);
+					pending.resolve({
+						id: questionId,
+						selected,
+					});
+				}
+				return;
+			}
 			if (op.startsWith("uqa:")) {
 				const parts = op.split(":");
 				const questionId = parts[1] ?? "";
@@ -1176,6 +1262,11 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		groupTrigger,
 		dedupe,
 		allowlist: () => getCfg().allowlist,
+		wal: inboundWal,
+		// Persist inbound Feishu images/files as real local files under the
+		// bridge state dir, so a non-vision model / external tooling can read
+		// them off disk (the DSH attachment store alone is in-memory).
+		inboundDir: join(dir, "inbound"),
 	});
 
 	// ---- conversations / turn supervisor --------------------------------------
@@ -1355,12 +1446,66 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		status.refreshCounters({
 			outboxPending: outbox.pendingCount(),
 			outboxFailed: outbox.failedCount(),
+			inboundPending: inboundWal.pendingReplays().length,
 		});
 		status.setConn("connected", {
 			wsReady: transport.wsReady(),
 		});
 		bridge.setStarted(true);
 		lifecycleStarted = true;
+		// ---- inbound request replay (入站请求补发) -----------------------------
+		// Any text request recorded as "accepted" but whose agent-turn never
+		// produced a durable output was almost certainly interrupted by the
+		// previous process dying / a plugin reload / a dsh restart. Re-dispatch
+		// it through the normal inbound pipeline (skipDedupe via handleCompensated)
+		// so the user's request is answered, not silently dropped. Each record is
+		// attempt-capped (default 2) within a replay window (default 30 min), so a
+		// genuinely broken request can't loop forever. Fire-and-forget: never
+		// blocks bridge startup.
+		void (async () => {
+			let replayed = 0;
+			try {
+				inboundWal.prune();
+				for (const rec of inboundWal.pendingReplays()) {
+					if (!inboundWal.markReplay(rec.messageId)) continue;
+					try {
+						await messageHandler.handleCompensated({
+							messageId: rec.messageId,
+							chatId: rec.chatId,
+							chatType: rec.chatType,
+							chatMode:
+								rec.chatType === "p2p" ? "p2p" : "group_all",
+							senderOpenId: rec.senderOpenId,
+							msgType: "text",
+							content: rec.text,
+							text: rec.text,
+							mentions: [],
+							timestamp: rec.acceptedAt,
+						});
+						replayed++;
+					} catch (err) {
+						logger.warn(
+							`inbound replay failed for ${rec.messageId}: ${
+								err instanceof Error ? err.message : String(err)
+							}`,
+						);
+					}
+				}
+				if (replayed > 0)
+					logger.info(`inbound replay re-dispatched ${replayed} request(s)`);
+				// Reflect the post-replay pending count (requests that could not be
+				// immediately answered stay visible in /status for transparency).
+				status.refreshCounters({
+					inboundPending: inboundWal.pendingReplays().length,
+				});
+			} catch (err) {
+				logger.warn(
+					`inbound replay errored: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+			}
+		})();
 		logger.info("bridge started (in-process) [HMR-RELOAD-MARKER-2]");
 	};
 	const stopBridge = async (): Promise<void> => {
@@ -1878,6 +2023,11 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		} catch {
 			// best effort
 		}
+		try {
+			rmSync(join(dir, "inbound-wal"), { recursive: true, force: true });
+		} catch {
+			// best effort
+		}
 		return `已清除凭据（ref=${ref}）并清理状态目录 ${dir}。重新使用请运行 /lark setup。`;
 	};
 
@@ -1909,6 +2059,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				status.refreshCounters({
 					outboxPending: outbox.pendingCount(),
 					outboxFailed: outbox.failedCount(),
+					inboundPending: inboundWal.pendingReplays().length,
 				});
 		}, 60_000);
 		sweep.unref?.();

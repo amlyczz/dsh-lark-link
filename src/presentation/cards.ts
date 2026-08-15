@@ -138,9 +138,17 @@ export function withButtons(card: unknown, buttons: unknown[]): unknown {
 }
 
 /**
- * Intent-confirmation card (DSH ask_user_question → Feishu). Option buttons
- * answer via op "uqa:<questionId>:<optionIndex>"; the footer invites a
- * plain-text reply for a custom answer.
+ * Intent-confirmation card (DSH ask_user_question → Feishu).
+ *
+ * Single-select (default): one button per option, answered immediately via op
+ * "uqa:<questionId>:<optionIndex>".
+ *
+ * Multi-select (multiSelect === true): a form_container with a
+ * multi_select_static dropdown; the user taps 提交 and the onSubmit callback
+ * returns action.formValue.answer (string[] of option indexes) via op
+ * "uqam:<questionId>".
+ *
+ * The footer always invites a plain-text reply as a custom answer.
  */
 export function questionCard(q: {
 	id: string;
@@ -148,7 +156,50 @@ export function questionCard(q: {
 	question: string;
 	detail?: string;
 	options?: ReadonlyArray<{ label: string; description?: string }>;
+	multiSelect?: boolean;
 }): unknown {
+	const header = q.header
+		? {
+				header: {
+					title: { tag: "plain_text", content: q.header },
+					template: "blue" as const,
+				},
+			}
+		: {};
+	if (q.multiSelect) {
+		const options = (q.options ?? []).map((o, i) => ({
+			text: { tag: "plain_text", content: o.label },
+			value: String(i),
+		}));
+		return {
+			schema: "2.0",
+			...header,
+			body: {
+				elements: [
+					{ tag: "markdown", content: q.question },
+					...(q.detail ? [{ tag: "markdown", content: q.detail }] : []),
+					{
+						tag: "form_container",
+						children: [
+							{
+								tag: "multi_select_static",
+								name: "answer",
+								placeholder: {
+									tag: "plain_text",
+									content: "请选择（可多选）…",
+								},
+								options,
+							},
+						],
+						onSubmit: [
+							{ type: "callback", value: { op: `uqam:${q.id}` } },
+						],
+					},
+					{ tag: "markdown", content: "或直接发消息输入自定义答案" },
+				],
+			},
+		};
+	}
 	const elements: unknown[] = [
 		{ tag: "markdown", content: q.question },
 		...(q.detail ? [{ tag: "markdown", content: q.detail }] : []),
@@ -162,14 +213,7 @@ export function questionCard(q: {
 	});
 	return {
 		schema: "2.0",
-		...(q.header
-			? {
-					header: {
-						title: { tag: "plain_text", content: q.header },
-						template: "blue",
-					},
-				}
-			: {}),
+		...header,
 		body: { elements },
 	};
 }

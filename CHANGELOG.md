@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.0
+
+**新增：入站请求补发（服务中断/插件更新/dsh 重启也能把没回答的消息补回来）**
+
+- **多选意图确认卡片**：`ask_user_question` 的 `multi_select: true` 现在会渲染飞书 schema 2.0 的 `multi_select_static` 下拉多选 + 提交按钮，回调经 `uqam:<id>` op 回传选中的多个选项（此前会被单选的按钮卡片忽略多选标记）。（GH #5）
+
+- **核心保证**：一条用户消息被 Agent **接受但处理到一半**（进程被杀 / 插件热更新 / dsh 重启）时，之前会静默丢失（dedupe 已消费、断连补偿只覆盖 WS 掉线窗口）。现在这类请求会持久化进 Inbound WAL（`<state>/inbound-wal/`），重启后自动重新触发、把回答补发给用户。
+- **实现**：新增 `src/inbound/inbound-wal.ts`（崩溃安全的 JSONL 耐久日志，复用 outbox 的 `wx`+rename 落盘纪律）；message-handler 在交给 Agent 前只记录**纯文本**请求（媒体/命令不记）；turn 的可交付输出落盘（outbox 入队 / 流式卡定稿）即标完成；启动时对账，把"已接受但未交付"的请求重新投递（`handleCompensated`，跳过 dedupe）。
+- **防空转**：每个请求限重放次数（默认 2 次）+ 重放时间窗（默认 30 分钟），损坏/超时的请求不会无限循环。
+- **透明可见**：`/status` 与 Web 面板新增「补发」计数，显示待补发条数，补完后归零。
+- **边界**：仅纯文本请求纳入补发；指令/图片/文件等不可靠重放对象不记录。幂等（dedupeKey + 已交付跳过）保证不会重复回答。
+
+### 可靠性 / 稳定 · 5 项修复
+
+针对「消息不丢失 + 各种中断补发 + 稳定」的安全网加固：
+
+- **#1 修复：outbox 磁盘无限膨胀** —— `outbox.prune()` 从未被调用，`done/fatal` envelope 超保留期(默认 7 天)永不清理。现 `start()` 自调度周期清理（约 1h，可 `pruneIntervalMs` 覆盖），磁盘 segments 不再无限增长。
+- **#2 修复：命令回复不再裸发** —— `bridgeHandler` 的桥命令回复（`/status /help /sessions /workspace /lark-config /mode /permission /model /new /stop …`）原直接 `sender.replyTo`（裸 await，进程死在此刻即丢），现全部改走 **durable outbox**（`command-reply`，幂等 dedupeKey），进程崩溃/重启自动补发（DSH 注册命令回复本就走 outbox，桥命令现已对齐）。
+- **#3 修复：流式卡定稿失败 → 降到 outbox** —— `cardkit-stream.finalize` 原先**吞掉** final PUT 错误（卡停在"正在流式打印"，内容丢失也不报错）。现 final PUT / 无卡时 Create 失败会 **re-throw**，event-forwarder 捕获后落回 durable outbox，内容绝不丢。
+- **#4 修复：/status 计数不实时** —— outbox 计数只在启动/60s 定时刷新。现 outbox 增加 `onStatsChange` 回调，随投递/失败/入队/清理实时刷新 `outboxPending/outboxFailed`，`/status` 与 Web 面板实时反映。
+- **#5 修复：熔断后需手动重启才恢复** —— 熔断（quota breaker / 重连耗尽）后原需人工 `/lark restart`。现 connection-supervisor 在 **配额窗口过期后自动解除熔断、自动重连**（`tick` 检测 `resetAt`），完全自愈无需干预。
+
+
+---
+
 ## 0.1.1（未发布）
 
 对齐 pi-feishu-link 2026-08-14 实机修复轮：

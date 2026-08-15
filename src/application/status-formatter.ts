@@ -10,6 +10,8 @@ export function formatStatusLine(s: BridgeStatus): string {
     `outbox: ${s.outboxPending} 待发 / ${s.outboxFailed} 失败`,
     `会话: ${s.sessions}`,
   ];
+  if (s.inboundPending > 0)
+    parts.push(`补发: ${s.inboundPending} 条未完成`);
   if (s.quarantinedUntil) {
     const mins = Math.ceil((s.quarantinedUntil - Date.now()) / 60_000);
     parts.push(`熔断: ${Math.max(0, mins)}min 后重试`);
@@ -25,6 +27,7 @@ export function statusDetailLines(s: BridgeStatus): string[] {
     `上次探活: ${s.lastProbeAt ? new Date(s.lastProbeAt).toISOString() : "—"} (${s.lastProbeOk === undefined ? "?" : s.lastProbeOk ? "正常" : "失败"})`,
     `outbox 待发: ${s.outboxPending}`,
     `outbox 失败: ${s.outboxFailed}`,
+    `入站补发待处理: ${s.inboundPending}`,
     `活跃会话: ${s.sessions}`,
   ];
   if (s.connectedAt) lines.push(`连接时间: ${new Date(s.connectedAt).toISOString()}`);

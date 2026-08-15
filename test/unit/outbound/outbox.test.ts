@@ -179,3 +179,77 @@ test("outbox: prune removes only terminal envelopes older than retainDays", () =
     }, 300);
   });
 });
+
+test("outbox: start() self-prunes done/fatal letters via pruneIntervalMs", async () => {
+  let fakeNow = 1_000_000;
+  const dir = tempDir("outbox-selfprune-");
+  const outbox = createOutbox({
+    dir,
+    sender: {
+      async deliver() {
+        return { ok: true };
+      },
+    },
+    cfg: { maxAttempts: 50, backoffMaxMs: 60_000, retainDays: 1, pendingCap: 1000, blobThreshold: 24_000 },
+    now: () => fakeNow,
+    pruneIntervalMs: 50, // fast cadence for the test
+  });
+  outbox.rebuildFromDisk();
+  outbox.start();
+  outbox.enqueue({ dedupeKey: "sp1", laneKey: "l", route, kind: "final", payload: { kind: "text", text: "x" } });
+  await new Promise((r) => setTimeout(r, 200)); // delivered → done
+  // Age beyond retainDays; the self-prune timer should remove it from disk.
+  fakeNow += 2 * 86_400_000;
+  await new Promise((r) => setTimeout(r, 120)); // let one prune tick run
+  await outbox.stop();
+
+  // A fresh instance sees it gone (no expired done letters remain on disk).
+  const probe = createOutbox({
+    dir,
+    sender: { async deliver() { return { ok: false, retryable: false, error: "no" }; } },
+    cfg: { maxAttempts: 1, backoffMaxMs: 1, retainDays: 1, pendingCap: 1000, blobThreshold: 24 },
+    now: () => fakeNow,
+  });
+  probe.rebuildFromDisk();
+  assert.equal(probe.pendingCount(), 0, "old done envelope pruned by self-timer");
+});
+
+test("outbox: onStatsChange fires on enqueue and after delivery", async () => {
+  const dir = tempDir("outbox-stats-");
+  const seen: Array<{ pending: number; failed: number }> = [];
+  const outbox = createOutbox({
+    dir,
+    sender: { async deliver() { return { ok: true }; } },
+    cfg: { maxAttempts: 5, backoffMaxMs: 10, retainDays: 7, pendingCap: 1000, blobThreshold: 24_000 },
+    onStatsChange: (s) => seen.push(s),
+  });
+  outbox.rebuildFromDisk();
+  outbox.start();
+  outbox.enqueue({ dedupeKey: "st1", laneKey: "l", route, kind: "final", payload: { kind: "text", text: "x" } });
+  await new Promise((r) => setTimeout(r, 200)); // drained → done
+  await outbox.stop();
+  assert.ok(seen.length >= 1, "onStatsChange fired at least once");
+  // The final recorded stats should show nothing pending/failed (all delivered).
+  const last = seen[seen.length - 1]!;
+  assert.equal(last.pending, 0);
+  assert.equal(last.failed, 0);
+});
+
+test("outbox: onStatsChange reflects a failed message", async () => {
+  const dir = tempDir("outbox-stats-fail-");
+  const seen: Array<{ pending: number; failed: number }> = [];
+  const outbox = createOutbox({
+    dir,
+    sender: { async deliver() { return { ok: false, retryable: true, error: "flaky" }; } },
+    cfg: { maxAttempts: 2, backoffMaxMs: 5, retainDays: 7, pendingCap: 1000, blobThreshold: 24_000 },
+    onStatsChange: (s) => seen.push(s),
+  });
+  outbox.rebuildFromDisk();
+  outbox.start();
+  outbox.enqueue({ dedupeKey: "sf1", laneKey: "l", route, kind: "final", payload: { kind: "text", text: "y" } });
+  await new Promise((r) => setTimeout(r, 200));
+  await outbox.stop();
+  assert.ok(seen.some((s) => s.pending > 0), "a pending count was reported while it failed/retried");
+  assert.ok(seen.some((s) => s.failed > 0), "a failed count was reported");
+});
+

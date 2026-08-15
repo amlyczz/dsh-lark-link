@@ -120,7 +120,9 @@ export function createCardKitStream(opts: CardKitStreamOptions): CardKitStreamHa
     async finalize(fullText) {
       if (disposed) return cardId ?? "";
       if (!cardId) {
-        // Never created a card — try a plain create (non-streaming).
+        // Never created a card — try a plain create (non-streaming). If this
+        // fails, PROPAGATE so the caller can fall back to the durable outbox
+        // (otherwise the content would be lost).
         try {
           const created = await opts.api.createCard(content(fullText));
           cardId = created.card_id ?? created.data?.card_id;
@@ -129,11 +131,15 @@ export function createCardKitStream(opts: CardKitStreamOptions): CardKitStreamHa
         } catch (err) {
           opts.onError?.(err);
           disposed = true;
-          return "";
+          throw err;
         }
       }
       const id = cardId;
       // 1) Turn streaming OFF (PATCH settings), 2) PUT the full content.
+      // The settings-off PATCH is cosmetic (streaming staying on vs. losing
+      // content) so its failure is swallowed. The final content PUT is the
+      // durable delivery — its failure MUST propagate so the caller can fall
+      // back to the outbox rather than silently dropping the reply.
       try {
         await opts.api.patchCard(id, {
           card_id: id,
@@ -149,6 +155,8 @@ export function createCardKitStream(opts: CardKitStreamOptions): CardKitStreamHa
         await opts.api.updateCard(id, content(fullText));
       } catch (err) {
         opts.onError?.(err);
+        disposed = true;
+        throw err;
       }
       disposed = true;
       return id;

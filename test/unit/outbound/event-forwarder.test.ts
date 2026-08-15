@@ -9,7 +9,7 @@ import type { CardKitStreamHandle } from "../../../src/outbound/cardkit-stream.t
 const route: Route = { sessionKey: "dm:ou_x", chatId: "oc_x", chatType: "p2p", updatedAt: 0 };
 const routeRef: RouteRef = { sessionKey: "dm:ou_x", chatId: "oc_x", chatType: "p2p" };
 
-function makeForwarder(opts: { streaming?: boolean; failStream?: boolean } = {}) {
+function makeForwarder(opts: { streaming?: boolean; failStream?: boolean; finalizeThrows?: boolean } = {}) {
   const sent: unknown[] = [];
   const sender: OutboxSender = {
     async deliver(_env, payload) {
@@ -36,6 +36,7 @@ function makeForwarder(opts: { streaming?: boolean; failStream?: boolean } = {})
     },
     async finalize(t: string) {
       finalized.push(t);
+      if (opts.finalizeThrows) throw new Error("finalize down");
       return "card-1";
     },
   };
@@ -68,6 +69,14 @@ test("forwarder: assistant/message settles the final text on the stream card", a
   await fw.onSessionEvent("dm:ou_x", { type: "assistant/chunk", text: "lo" });
   await fw.onSessionEvent("dm:ou_x", { type: "assistant/message", text: "hello" });
   assert.deepEqual(finalized, ["hello"]);
+});
+
+test("forwarder: finalize failure falls through to the durable outbox (no content loss)", async () => {
+  const { fw, sent } = makeForwarder({ finalizeThrows: true });
+  await fw.onSessionEvent("dm:ou_x", { type: "assistant/message", text: "durable content" });
+  await new Promise((r) => setTimeout(r, 200)); // let the outbox drain
+  const texts = sent.filter((p) => (p as { kind: string }).kind === "text" && (p as { text: string }).text === "durable content");
+  assert.equal(texts.length, 1, "finalize failure fell back to a durable text delivery");
 });
 
 test("forwarder: turn/end marks done (real output) but does NOT re-send final (pi bdbc0a2)", async () => {

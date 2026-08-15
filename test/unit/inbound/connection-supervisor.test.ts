@@ -118,3 +118,58 @@ test("supervisor: reconnect resets quota and reconnects", async () => {
   assert.equal(sup.state(), "connected");
   await sup.stop();
 });
+
+test("supervisor: quarantine auto-recovers when the quota window resets", async () => {
+  // Controllable clock drives both the quota window and the supervisor probe.
+  let fakeNow = 1_000_000;
+  let probeOk = false; // external (Feishu) is down the whole time
+  const connected = { ok: false };
+  const transport = {
+    async start() {
+      if (probeOk) connected.ok = true;
+    },
+    async stop() {
+      connected.ok = false;
+    },
+    isConnected: () => connected.ok,
+    wsReady: () => connected.ok,
+    async probe() {
+      return probeOk;
+    },
+  };
+  const quota = createQuotaGovernor(join(tempDir("sup-auto-"), "conn.jsonl"), {
+    windowMinutes: 1,
+    limit: 2,
+    now: () => fakeNow,
+  });
+  const status = createStatusStore(undefined);
+  const sup = createConnectionSupervisor({
+    transport,
+    quota,
+    status,
+    cfg: {
+      probeIntervalMs: 5,
+      probeTimeoutMs: 50,
+      probeFailThreshold: 1,
+      maxReconnectAttempts: 2,
+      idleKeepaliveMs: 60_000,
+      quotaWindowMinutes: 1,
+      quotaLimit: 2,
+    },
+    now: () => fakeNow,
+  });
+
+  await sup.start(); // connect fails (probe not ok) → stays disconnected/connects
+  for (let i = 0; i < 4; i++) await sup.tick(); // burn through the quota
+  assert.ok(quota.tripped(), "quota tripped");
+  assert.equal(sup.state(), "quarantined", "supervisor quarantined");
+
+  // External Feishu returns; after the window resets, tick() auto-recovers.
+  probeOk = true;
+  fakeNow += 61 * 60_000; // past windowMinutes
+  await sup.tick();
+  assert.equal(quota.tripped(), false, "quota lifted");
+  assert.equal(sup.state(), "connected", "auto-recovered to connected");
+  assert.equal(status.get().connState, "connected");
+  await sup.stop();
+});

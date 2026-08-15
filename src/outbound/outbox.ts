@@ -30,6 +30,13 @@ export interface OutboxSender {
   now?: () => number;
   /** Fatal delivery (permanent error, e.g. HTTP 400) marks the envelope fatal. */
   isFatalError?: (error: string) => boolean;
+  /** How often (ms) to sweep done/fatal envelopes older than retainDays.
+   *  Defaults to retainDays-scaled cadence (every ~1h) when omitted, so on-disk
+   *  segments never grow unbounded even if the caller never calls prune(). */
+  pruneIntervalMs?: number;
+  /** Fired whenever the pending/failed counts change (delivery done/failed,
+   *  enqueue, prune, rebuild). Lets the host refresh live status counters. */
+  onStatsChange?: (stats: { pending: number; failed: number }) => void;
 }
 
 export interface Outbox {
@@ -86,10 +93,25 @@ export function createOutbox(deps: OutboxDeps): Outbox {
 
   let draining = false;
   let stopped = false;
+  let pruneTimer: NodeJS.Timeout | undefined;
   const activeDeliveries = new Set<Promise<void>>();
   const laneQueues = new Map<string, Promise<void>>();
   /** Wake signal for the idle pump (set while it waits). */
   let idleWake: (() => void) | undefined;
+
+  const emitStats = (): void => {
+    try {
+      let pending = 0;
+      let failed = 0;
+      for (const env of envelopes.values()) {
+        if (env.status === "pending" || env.status === "failed") pending++;
+        if (env.status === "failed") failed++;
+      }
+      deps.onStatsChange?.({ pending, failed });
+    } catch {
+      // best-effort
+    }
+  };
 
   // ---- persistence -------------------------------------------------------
   const segmentPath = (n: number): string => join(dir, `seg-${n}.jsonl`);
@@ -237,6 +259,7 @@ export function createOutbox(deps: OutboxDeps): Outbox {
     persistAll();
     // Wake an idle pump immediately — zero poll latency for new work.
     idleWake?.();
+    emitStats();
     return id;
   }
 
@@ -280,6 +303,7 @@ export function createOutbox(deps: OutboxDeps): Outbox {
     // already removed from its lane position at drain; it stays failed and is
     // re-drained by the retry sweep. New messages in the lane proceed.
     persistAll();
+    emitStats();
   }
 
   /** Drain one lane FIFO. Failed messages fall out; retry sweep picks them up. */
@@ -354,14 +378,44 @@ export function createOutbox(deps: OutboxDeps): Outbox {
     }
   }
 
+  // Named (hoisted) prune so start() can self-schedule it regardless of order.
+  function doPrune(): void {
+    const cutoff = now() - deps.cfg.retainDays * 86_400_000;
+    let changed = false;
+    for (const [id, env] of envelopes) {
+      if ((env.status === "done" || env.status === "fatal") && env.updatedAt < cutoff) {
+        envelopes.delete(id);
+        if (env.blobRef) {
+          try {
+            rmSync(join(dir, "blobs", env.blobRef));
+          } catch {
+            // ignore
+          }
+        }
+        changed = true;
+      }
+    }
+    if (changed) persistAll();
+    emitStats();
+  }
+
   return {
     enqueue,
     start() {
       stopped = false;
+      // Self-pruning: sweep done/fatal older than retainDays on a cadence, so
+      // on-disk segments never grow unbounded even if no external caller ever
+      // invokes prune(). Default ~1h (or a caller-supplied interval).
+      const cadence = deps.pruneIntervalMs ?? Math.max(3_600_000, Math.min(24 * 3_600_000, deps.cfg.retainDays * 3_600_000));
+      doPrune();
+      pruneTimer = setInterval(() => doPrune(), cadence);
+      if (pruneTimer.unref) pruneTimer.unref();
       void pump();
     },
     async stop() {
       stopped = true;
+      if (pruneTimer) clearInterval(pruneTimer);
+      pruneTimer = undefined;
       await Promise.allSettled([...activeDeliveries]);
     },
     pendingCount() {
@@ -378,24 +432,7 @@ export function createOutbox(deps: OutboxDeps): Outbox {
       }
       return n;
     },
-    prune() {
-      const cutoff = now() - deps.cfg.retainDays * 86_400_000;
-      let changed = false;
-      for (const [id, env] of envelopes) {
-        if ((env.status === "done" || env.status === "fatal") && env.updatedAt < cutoff) {
-          envelopes.delete(id);
-          if (env.blobRef) {
-            try {
-              rmSync(join(dir, "blobs", env.blobRef));
-            } catch {
-              // ignore
-            }
-          }
-          changed = true;
-        }
-      }
-      if (changed) persistAll();
-    },
+    prune: doPrune,
     rebuildFromDisk,
     lanes: () => [...lanes.keys()],
   };

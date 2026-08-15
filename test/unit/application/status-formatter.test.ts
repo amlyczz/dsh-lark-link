@@ -8,6 +8,7 @@ const status: BridgeStatus = {
   wsReady: true,
   outboxPending: 3,
   outboxFailed: 1,
+  inboundPending: 0,
   sessions: 2,
 };
 

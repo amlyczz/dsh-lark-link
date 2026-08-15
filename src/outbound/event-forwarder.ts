@@ -42,6 +42,13 @@ export interface EventForwarderDeps {
   streamFor(sessionKey: string): StreamTarget | undefined;
   /** Config getter — read per event (hot-reload friendly). */
   cfg: () => ForwarderConfig;
+  /**
+   * Called when a session's durable (per-turn) output is enqueued into the
+   * outbox. Lets the inbound WAL mark the triggering user request delivered —
+   * the durable output IS the proof the turn completed, so that request won't
+   * be re-triggered after a crash. Best-effort; failures are swallowed.
+   */
+  onDelivered?(sessionKey: string): void;
 }
 
 export interface EventForwarder {
@@ -120,6 +127,7 @@ export function createEventForwarder(deps: EventForwarderDeps): EventForwarder {
           try {
             await st.stream.finalize(text);
             st.stream = undefined;
+            deps.onDelivered?.(sessionKey); // card is final — treat as delivered
             return;
           } catch {
             st.stream = undefined;
@@ -133,6 +141,7 @@ export function createEventForwarder(deps: EventForwarderDeps): EventForwarder {
           kind: "assistant-output",
           payload: { kind: "text", text },
         });
+        deps.onDelivered?.(sessionKey); // durable enqueue — request is delivered
         break;
       }
       case "turn/end": {
