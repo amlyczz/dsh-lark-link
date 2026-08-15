@@ -1124,6 +1124,15 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	});
 
 	// ---- conversations / turn supervisor --------------------------------------
+	// Session keys whose in-flight turn has produced at least one deliverable
+	// assistant output. Used to detect SILENT turn failures (no reply): when a
+	// turn ends aborted/rejected WITHOUT any output, the agent is almost
+	// certainly stuck (e.g. a reasoning model returning empty `content`, or a
+	// swallowed model/tool error) and would keep swallowing every subsequent
+	// message — the chat appears broken with no error. We recover it (dispose
+	// → fresh session on next message) and surface a diagnostic so it's never
+	// a silent no-reply again. Shared by every conversation (keyed by key).
+	const turnDelivered = new Set<string>();
 	const conversations = createConversationManager({
 		backend,
 		maxSessions: getCfg().maxSessions,
@@ -1135,9 +1144,49 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				.catch((e) => logger.warn(`forwarder: ${String(e)}`));
 			// Arm the turn watchdog when a turn opens; disarm on completion/output.
 			// (Previously arm was never called — the watchdog was dead code.)
-			if (event.type === "turn/start") turnSupervisor.arm(key);
-			if (event.type === "turn/end" || event.type === "assistant/message") {
+			if (event.type === "turn/start") {
+				turnDelivered.delete(key);
+				turnSupervisor.arm(key);
+			}
+			if (event.type === "assistant/message") {
 				turnSupervisor.disarm(key);
+				if ((event.text ?? "").trim() !== "") turnDelivered.add(key);
+			}
+			if (event.type === "turn/end") {
+				turnSupervisor.disarm(key);
+				const reason = event.reason;
+				const silent =
+					!turnDelivered.has(key) &&
+					(reason === "aborted" ||
+						reason === "rejected" ||
+						reason === "failed" ||
+						reason === "error");
+				turnDelivered.delete(key);
+				if (silent) {
+					logger.warn(
+						`turn ended '${reason}' with no output for ${key}; recovering agent`,
+					);
+					// Detach the fan-out listener so a late event from the dying
+					// agent can't re-enter: dispose() drops the hook + tracking.
+					void conversations
+						.dispose(key)
+						.then(() => {
+							// Tell the user instead of a mute dead-end. Best effort;
+							// the chat id comes from the route table (may be absent).
+							const chatId = routeStore.get(key)?.chatId;
+							if (chatId) {
+								return sender
+									.sendText(
+										chatId,
+										`⚠️ 本轮没有产出回复（turn ended: ${reason}，无输出）。已重置会话，请再发一条消息重试。若仍无回复，请检查 /model 是否指向可用的模型。`,
+									)
+									.catch(() => undefined);
+							}
+						})
+						.catch((e) =>
+							logger.warn(`recover agent for ${key} failed: ${String(e)}`),
+						);
+				}
 			}
 		},
 	});
