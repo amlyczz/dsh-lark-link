@@ -124,6 +124,58 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	const dedupe = createDedupeStore(join(dir, "dedupe.jsonl"));
 	const getCfg = (): ReturnType<typeof configStore.get> => configStore.get();
 
+	// ---- permission default sync ---------------------------------------------
+	// The bridge config `permissionMode` ("read-only | workspace-write |
+	// danger-full-access") is documented as the DEFAULT for new sessions, but it
+	// is only ever applied to the CURRENT session via /permission. A brand-new
+	// session is pinned by DSH's permissionPresets service to ITS default
+	// (permission:defaultPreset — the composed default is workspace-write), so
+	// new sessions silently ignored the configured mode. Sync the DSH default to
+	// the bridge config so every subsequent new session inherits it. This is a
+	// best-effort, idempotent, non-fatal write into the DSH settings document.
+	let syncTried = 0;
+	function syncDefaultPermission(): void {
+		const settings = (
+			ctx as unknown as {
+				get?(
+					name: string,
+				):
+					| {
+							update?(
+								ns: string,
+								patch: { defaultPreset: string },
+							): Promise<unknown>;
+					  }
+					| undefined;
+			}
+		).get?.("settings");
+		if (!settings?.update) {
+			// Settings provider absent yet (or not mounted, e.g. bare host). The
+			// bridge still functions, just without an inherited default; retry a
+			// little so a slow service init still gets synced.
+			syncTried++;
+			if (syncTried <= 4) setTimeout(syncDefaultPermission, 500 * syncTried);
+			return;
+		}
+		const mode = getCfg().permissionMode;
+		settings
+			.update("permission", { defaultPreset: mode })
+			.then(() => logger.info(`permission default set to ${mode}`))
+			.catch((err: unknown) => {
+				// The permission namespace may not be registered yet (load order).
+				// Retry a couple of times shortly after; otherwise surface and move
+				// on — never fatal for the bridge.
+				syncTried++;
+				logger.warn(
+					`sync permission default to ${mode} failed: ${err instanceof Error ? err.message : String(err)}`,
+				);
+				if (syncTried < 4) {
+					setTimeout(syncDefaultPermission, 500 * syncTried);
+				}
+			});
+	}
+	syncDefaultPermission();
+
 	// ---- backend: real DSH adapter, falling back to the in-memory mock ------
 	// LIVE model selection shared by every agent: /model mutates this object,
 	// installModelSelection reads it per request, so switching the model does
@@ -1031,6 +1083,9 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				}
 				configStore.update({ permissionMode: arg });
 				configStore.saveOverrides();
+				// Keep the DSH default in lockstep so NEW sessions inherit the
+				// switch too, not just this one.
+				syncDefaultPermission();
 				await sender.replyTo(msg, `权限已切换为 ${arg}`);
 				return true;
 			}
