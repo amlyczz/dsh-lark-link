@@ -13,8 +13,10 @@
 //
 // Slot registration: `sidebar.footer.action` is a `list` slot (declared by
 // ui-sidebar); `register` takes the parent name + an entry `id`. The component
-// owns its open/close state; the popover is position:fixed (escapes sidebar
-// overflow).
+// owns its open/close state; the popover is position:fixed and is rendered
+// through a React portal to document.body — it escapes the sidebar footer slot
+// container, so peer footer-slot plugins (e.g. dsh-cost-meter, which rewrites
+// that container's children/order) can never reshape or dislocate it.
 
 import type { Context } from "@deepseek-ai/cordis";
 
@@ -29,6 +31,31 @@ type ReactApi = {
 };
 const R = require("react") as ReactApi;
 const { createElement: h, useState, useEffect } = R;
+// render the popover through a portal to document.body so it escapes the
+// shared sidebar footer slot container. The sidebar.footer.action slot is a
+// LIST where other plugins (e.g. dsh-cost-meter) legitimately reorder the
+// container's children / rewrite its inline flex styles while watching it with
+// a MutationObserver — a popover left as a slot child gets reshuffled by that
+// churn and visibly deforms (GH issue #3). A body portal keeps it stable.
+const reactDom = require("react-dom") as {
+	createPortal?: (node: unknown, container: unknown) => unknown;
+};
+
+const win = globalThis as unknown as {
+	location?: { origin?: string };
+	fetch?: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
+	// Browser-only, used as the portal mount target. Kept out of the TS dom lib
+	// (this package's lib is ES2023); accessed lazily through globalThis.
+	document?: { body?: unknown } | null;
+};
+
+// If react-dom.createPortal is available (and we're in a browser), mount via a
+// body portal; otherwise fall back to rendering in place (older runtimes).
+const bodyEl = win.document?.body;
+const portalToBody =
+	bodyEl != null && reactDom.createPortal
+		? (node: unknown) => reactDom.createPortal!(node, bodyEl)
+		: (node: unknown) => node;
 
 export const name = "dsh-lark-link-client";
 export const inject = ["slots"];
@@ -42,11 +69,6 @@ export interface ClientContext extends Context {
 		): () => void;
 	};
 }
-
-const win = globalThis as unknown as {
-	location?: { origin?: string };
-	fetch?: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
-};
 
 interface StatusPayload {
 	connState?: string;
@@ -348,7 +370,11 @@ export function apply(ctx: ClientContext): void {
 			footer,
 		);
 
-		return h("div", null, button, panel);
+		// The popover goes through portalToBody (document.body) so another
+		// footer-slot plugin (dsh-cost-meter) reordering the shared sidebar
+		// footer container can never dislocate or deform it. Only the trigger
+		// button stays inside the sidebar footer slot.
+		return h("div", null, button, portalToBody(panel));
 	};
 
 	ctx.slots.inject("sidebar.footer.action", () =>
