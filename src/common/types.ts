@@ -86,6 +86,25 @@ export interface DedupeRecord {
   at: number;
 }
 
+/**
+ * One agent preset a bridge session can run on, as surfaced by DSH's
+ * agentPresets service. Harness-agnostic mirror of the roster row: the DSH
+ * adapter maps its `AgentPreset` onto this shape, and the memory backend
+ * simulates it, so the presentation layer never touches DSH types.
+ */
+export interface AgentPresetOption {
+  /** Stable id (the preset directory name); also the /mode argument. */
+  id: string;
+  /** Display label; falls back to `id` when the preset publishes none. */
+  label: string;
+  /** One sentence on what the preset is for. */
+  desc?: string;
+  /** 'system' ships with DSH; 'user' was authored locally. */
+  trust?: "system" | "user";
+  /** Why this preset cannot compose a session (absent = usable). */
+  broken?: string;
+}
+
 /** Connection state machine. */
 export type ConnState = "idle" | "connecting" | "connected" | "degraded" | "reconnecting" | "quarantined" | "stopped";
 

@@ -71,7 +71,13 @@ export interface FeishuConfig {
 	allowlist: string[];
 	/** Bridge agent workspace root (cwd for created sessions). Empty = process.cwd(). */
 	workspaceRoot: string;
-	/** Agent preset for bridge sessions (standard | code | minimal | cordis). */
+	/**
+	 * Agent preset for bridge sessions. Any preset id the deployment supplies —
+	 * the shipped `standard | code | minimal | cordis`, OR a locally authored
+	 * (user) preset id created in the DSH GUI — is valid. `/mode` renders the
+	 * live roster (shipped + custom); `/lark-config agentPreset=<id>` accepts
+	 * any id verbatim.
+	 */
 	agentPreset: string;
 	/** Default DSH permission preset (read-only | workspace-write | danger-full-access). */
 	permissionMode: string;

@@ -79,12 +79,15 @@ function fakeRegistry(
 const ctxOf = (
 	registry: ReturnType<typeof fakeRegistry>,
 	agentDefaultModel?: unknown,
+	agentPresets?: unknown,
 ) =>
 	({
 		agents: registry,
 		// Cordis proxy surface — services are read via ctx.get(), not props.
 		get(name: string) {
-			return name === "agentDefaultModel" ? agentDefaultModel : undefined;
+			if (name === "agentDefaultModel") return agentDefaultModel;
+			if (name === "agentPresets") return agentPresets;
+			return undefined;
 		},
 	}) as unknown as Parameters<typeof createDshAdapter>[0]["ctx"];
 
@@ -287,4 +290,43 @@ test("adapter: /new (rotate) mints a wholly fresh session id (new nonce)", async
 		second.sessionId.endsWith(":0"),
 		"fresh session starts at generation 0",
 	);
+});
+
+test("adapter: listPresets maps the live DSH roster (shipped + custom)", async () => {
+	const registry = fakeRegistry();
+	const agentPresets = {
+		async list() {
+			return [
+				{ id: "standard", trust: "system", name: "标准模式", description: "全能" },
+				{ id: "code", trust: "system" },
+				{ id: "aaa", trust: "user", name: "AAA 模式", description: "示例描述" },
+				{ id: "bbb", trust: "user", broken: "示例原因" },
+			];
+		},
+	};
+	const backend = mkBackend(ctxOf(registry, undefined, agentPresets));
+
+	const presets = await backend.listPresets();
+	assert.deepEqual(presets, [
+		{ id: "standard", trust: "system", label: "标准模式", desc: "全能" },
+		{ id: "code", trust: "system", label: "code" },
+		{ id: "aaa", trust: "user", label: "AAA 模式", desc: "示例描述" },
+		{ id: "bbb", trust: "user", label: "bbb", broken: "示例原因" },
+	]);
+});
+
+test("adapter: listPresets falls back to empty when agentPresets service is absent or fails", async () => {
+	const registry = fakeRegistry();
+	// No agentPresets service at all.
+	const bare = mkBackend(ctxOf(registry, undefined, undefined));
+	assert.deepEqual(await bare.listPresets(), []);
+
+	// Service present but list() rejects.
+	const failing = {
+		async list() {
+			throw new Error("roster unavailable");
+		},
+	};
+	const withFailure = mkBackend(ctxOf(registry, undefined, failing));
+	assert.deepEqual(await withFailure.listPresets(), []);
 });

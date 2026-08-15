@@ -541,6 +541,47 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		},
 		get: (key) => tracked.get(key)?.handle,
 		keyForSessionId: (sessionId) => keyBySession.get(sessionId),
+		async listPresets() {
+			// The roster the deployment currently supplies: shipped presets AND
+			// user-authored (custom) ones. Read live so a preset created while the
+			// bridge runs shows up on the next /mode picker. Falls back to the
+			// shipped four when the agentPresets service is absent or fails.
+			const presets = (
+				c as unknown as {
+					get?(name: string):
+						| {
+								list?(): Promise<
+									Array<{
+										id: string;
+										trust?: "system" | "user";
+										name?: string;
+										description?: string;
+										broken?: string;
+									}>
+								>;
+						  }
+						| undefined;
+				}
+			).get?.("agentPresets");
+			if (!presets?.list) return [];
+			try {
+				const rows = await presets.list();
+				return rows.map((row) => ({
+					id: row.id,
+					label: row.name ?? row.id,
+					...(row.trust === undefined ? {} : { trust: row.trust }),
+					...(row.description === undefined
+						? {}
+						: { desc: row.description }),
+					...(row.broken === undefined ? {} : { broken: row.broken }),
+				}));
+			} catch (err) {
+				deps.logger?.warn(
+					`agentPresets.list() failed — /mode falls back to shipped presets: ${String(err)}`,
+				);
+				return [];
+			}
+		},
 		disposeIdle(idleTtlMs) {
 			let n = 0;
 			for (const t of tracked.values()) {
