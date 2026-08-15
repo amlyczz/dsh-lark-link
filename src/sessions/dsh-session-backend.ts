@@ -7,7 +7,7 @@
 // (used by unit tests and by the bridge when DSH services are absent), plus
 // the real adapter implemented against the DSH Cordis ctx in `dsh-adapter.ts`.
 
-import type { FeishuInboundMessage } from "../common/types.ts";
+import type { FeishuInboundMessage, AgentPresetOption } from "../common/types.ts";
 
 export interface AttachmentInput {
   /** Local file path (image/file). */
@@ -57,6 +57,12 @@ export interface DshSessionBackend {
   get(key: string): AgentHandle | undefined;
   /** Map sessionId back to conversation key (for event routing). */
   keyForSessionId(sessionId: string): string | undefined;
+  /**
+   * The agent presets this deployment currently supplies — shipped AND
+   * user-authored (custom) rows. When DSH's agentPresets service is
+   * unavailable, the memory backend returns the shipped roster only.
+   */
+  listPresets(): Promise<AgentPresetOption[]>;
   /** Dispose idle agents beyond ttl; returns disposed count. */
   disposeIdle(idleTtlMs: number): number;
   /** Bump a conversation's session generation — next ensureAgent uses a fresh id (/new). */
@@ -72,6 +78,16 @@ export interface DshSessionBackend {
 // ---------------------------------------------------------------------------
 // In-memory mock — deterministic, no DSH dependency (unit tests use this).
 // ---------------------------------------------------------------------------
+
+/** The shipped preset roster, mirrored here so the memory backend (used when
+ * DSH services are absent) still answers a /mode picker with the four
+ * official modes. Kept in sync with `AGENT_PRESETS` in presentation/cards. */
+const SHIPPED_PRESETS: AgentPresetOption[] = [
+  { id: "standard", label: "标准模式", desc: "全能：文件/Shell/检索/Skills/目标/子代理/工作流", trust: "system" },
+  { id: "code", label: "PTC 模式", desc: "标准能力 + Code Mode（多步操作一次执行，更快）", trust: "system" },
+  { id: "minimal", label: "极简模式", desc: "仅 bash + 文件编辑，轻量省 token", trust: "system" },
+  { id: "cordis", label: "创造模式", desc: "标准能力 + preset 创作工具（面向开发者）", trust: "system" },
+];
 
 export function createMemoryDshBackend(
   opts: {
@@ -147,6 +163,7 @@ export function createMemoryDshBackend(
     },
     get: (key) => agents.get(key),
     keyForSessionId: (sessionId) => keyBySession.get(sessionId),
+    listPresets: async () => [...SHIPPED_PRESETS],
     disposeIdle(ttlMs) {
       let n = 0;
       for (const [key, a] of agents) {

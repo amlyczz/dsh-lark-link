@@ -12,6 +12,7 @@ import {
 	setupCard,
 	errorCard,
 	button,
+	modeCard,
 } from "../../../src/presentation/cards.ts";
 
 type Json = Record<string, unknown>;
@@ -116,4 +117,28 @@ test("button helper: primary/danger 样式", () => {
 	assert.equal(danger.type, "danger");
 	const plain = button("状态", { op: "status" }) as Json;
 	assert.equal(plain.type, undefined);
+});
+
+test("modeCard 无名单时回退到官方 4 个模式", () => {
+	const card = modeCard() as Json;
+	const body = card.body as Json;
+	const md = body.elements as Array<{ tag: string; content: string }>;
+	const text = md.find((e) => e.tag === "markdown")!.content;
+	for (const label of ["标准模式", "PTC 模式", "极简模式", "创造模式"]) {
+		assert.ok(text.includes(label), `官方模式 ${label} 应出现在回退卡片`);
+	}
+});
+
+test("modeCard 渲染动态名单（含自定义与不可用标注）", () => {
+	const card = modeCard("aaa", [
+		{ id: "standard", label: "标准模式", trust: "system" },
+		{ id: "aaa", label: "AAA 模式", trust: "user", desc: "示例描述" },
+		{ id: "bbb", label: "BBB 模式", trust: "user", broken: "示例原因" },
+	]) as Json;
+	const body = card.body as Json;
+	const md = body.elements as Array<{ tag: string; content: string }>;
+	const text = md.find((e) => e.tag === "markdown")!.content;
+	assert.ok(text.includes("AAA 模式（自定义） ← 当前"), "自定义模式应标注并高亮当前");
+	assert.ok(text.includes("（不可用：示例原因）"), "broken 模式应标注不可用原因");
+	assert.ok(!text.includes("standard（自定义）"), "官方模式不应标自定义");
 });

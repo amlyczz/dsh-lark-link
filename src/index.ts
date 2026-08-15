@@ -923,21 +923,29 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			}
 			case "mode": {
 				// /mode — picker card (single-select buttons) or switch by name.
+				// The roster is LIVE: shipped presets + user-authored (custom)
+				// ones, read from DSH's agentPresets service so a preset created
+				// in the GUI is selectable here too. AGENT_PRESETS is only the
+				// fallback when the service is unreachable.
+				const live = backend ? await backend.listPresets() : [];
+				const roster = live.length > 0 ? live : [...AGENT_PRESETS];
 				const arg = _rawInput.trim().toLowerCase();
 				if (!arg) {
 					await sender.sendCard(
 						msg.chatId,
 						withButtons(
-							modeCard(getCfg().agentPreset),
-							AGENT_PRESETS.map((p) => button(p.label, { op: `mode:${p.id}` })),
+							modeCard(getCfg().agentPreset, roster),
+							roster
+								.filter((p) => !p.broken)
+								.map((p) => button(p.label, { op: `mode:${p.id}` })),
 						),
 					);
 					return true;
 				}
-				if (!AGENT_PRESETS.some((p) => p.id === arg)) {
+				if (!roster.some((p) => p.id === arg)) {
 					await sender.replyTo(
 						msg,
-						`未知模式 ${arg}（可用: ${AGENT_PRESETS.map((p) => p.id).join(", ")}）`,
+						`未知模式 ${arg}（可用: ${roster.map((p) => p.id).join(", ")}）`,
 					);
 					return true;
 				}
@@ -951,9 +959,12 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// store AND the next message would reuse the same sessionId (stale
 				// content / id collision).
 				await conversations?.rotate(bridge.conversationKeyFor(msg));
+				const picked = roster.find((p) => p.id === arg);
 				await sender.replyTo(
 					msg,
-					`模式已切换为 ${arg}（当前会话已重置，下条消息生效；其他会话不受影响）`,
+					`模式已切换为 ${picked?.label ?? arg}${
+						picked?.trust === "user" ? "（自定义）" : ""
+					}（当前会话已重置，下条消息生效；其他会话不受影响）`,
 				);
 				return true;
 			}

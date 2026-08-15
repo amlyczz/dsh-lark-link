@@ -5,6 +5,8 @@
 // width:"fill" 防截断），交互回传用 behaviors:[{type:"callback",value}]。
 // emoji 精简为稳定集合（部分 emoji 在部分客户端字体渲染乱码）。
 
+import type { AgentPresetOption } from "../common/types.ts";
+
 export type CardVariant = "status" | "help" | "setup" | "welcome" | "error";
 
 /** Card button value (op routing). */
@@ -69,31 +71,38 @@ export function markdownCard(
 	};
 }
 
-/** Agent preset options (DSH agent-presets). */
-export const AGENT_PRESETS: ReadonlyArray<{
-	id: string;
-	label: string;
-	desc: string;
-}> = [
+/**
+ * Agent preset options (DSH agent-presets).
+ *
+ * `AGENT_PRESETS` is the FALLBACK roster — the four shipped presets — used
+ * when the live DSH agentPresets service is unreachable. When the service is
+ * up, the bridge renders the dynamic roster (shipped + user-authored) instead;
+ * see the DshSessionBackend.listPresets surface.
+ */
+export const AGENT_PRESETS: ReadonlyArray<AgentPresetOption> = [
 	{
 		id: "standard",
 		label: "标准模式",
 		desc: "全能：文件/Shell/检索/Skills/目标/子代理/工作流",
+		trust: "system",
 	},
 	{
 		id: "code",
 		label: "PTC 模式",
 		desc: "标准能力 + Code Mode（多步操作一次执行，更快）",
+		trust: "system",
 	},
 	{
 		id: "minimal",
 		label: "极简模式",
 		desc: "仅 bash + 文件编辑，轻量省 token",
+		trust: "system",
 	},
 	{
 		id: "cordis",
 		label: "创造模式",
 		desc: "标准能力 + preset 创作工具（面向开发者）",
+		trust: "system",
 	},
 ];
 
@@ -166,13 +175,20 @@ export function questionCard(q: {
 }
 
 /** Single-select mode picker card — tap a button to switch (no typing). */
-export function modeCard(current?: string): unknown {
+export function modeCard(
+	current?: string,
+	presets?: ReadonlyArray<AgentPresetOption>,
+): unknown {
+	const roster = presets && presets.length > 0 ? presets : AGENT_PRESETS;
 	return markdownCard(
 		[
 			"**Agent 模式**（单选，点按钮即切换，下条消息生效）",
 			"",
-			...AGENT_PRESETS.map(
-				(p) => `- ${p.label}${current === p.id ? " ← 当前" : ""}：${p.desc}`,
+			...roster.map(
+				(p) =>
+					`- ${p.label}${p.trust === "user" ? "（自定义）" : ""}${
+						current === p.id ? " ← 当前" : ""
+					}：${p.desc ?? p.id}${p.broken ? `（不可用：${p.broken}）` : ""}`,
 			),
 		].join("\n"),
 		{ header: "切换模式", accent: true },
