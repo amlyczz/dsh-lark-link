@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/amlyczz/dsh-lark-link/main/assets/mascot.png" alt="dsh-lark-link mascot" width="420"/>
+  <img src="https://cdn.jsdelivr.net/gh/amlyczz/dsh-lark-link@main/assets/mascot.png" alt="dsh-lark-link mascot" width="420"/>
 </p>
 
 <h1 align="center">🪶 dsh-lark-link</h1>
@@ -172,7 +172,7 @@ MIT — 自由使用、修改、分发。
 # English
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/amlyczz/dsh-lark-link/main/assets/mascot.png" alt="dsh-lark-link mascot" width="420"/>
+  <img src="https://cdn.jsdelivr.net/gh/amlyczz/dsh-lark-link@main/assets/mascot.png" alt="dsh-lark-link mascot" width="420"/>
 </p>
 
 **DeepSeek Harness × Feishu/Lark bridge** — put your DSH agent inside Feishu. Scan a QR code and go live in 30 seconds; chat from anywhere.
