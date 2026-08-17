@@ -197,8 +197,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	// conversation gets its own mutable entry via liveModelFor(key) —
 	// installModelSelection keeps a reference to it, so mutating the entry
 	// switches that conversation's model WITHOUT rebuilding its agent.
-	// Entries WITHOUT a per-key /model override are "followers" that track
-	// the bridge default; entries with an override keep their own model.
+	// Entries WITHOUT a per-key /model override snapshot the bridge default at
+	// first use and keep it (a GUI default switch only affects NEW
+	// conversations, never existing ones); entries with an override keep
+	// their own model.
 	const liveModelSelection = { provider: "", model: "" };
 	const admService = (
 		ctx as unknown as {
@@ -243,16 +245,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		}
 		return m;
 	};
-	// Push a bridge-default change into every follower entry (conversations
-	// that never ran /model themselves). Override entries keep their model.
-	const syncModelFollowers = (): void => {
-		for (const m of liveModels.values()) {
-			if (!m.override) {
-				m.provider = liveModelSelection.provider;
-				m.model = liveModelSelection.model;
-			}
-		}
-	};
+
 	// Fresh per-run nonce — NEVER persisted. (352af88 persisted it so bridge
 	// session ids survive restarts, but that makes a restarted bridge reuse a
 	// session id whose on-disk log does not match the live session, and
@@ -1448,19 +1441,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				lastModelSig = sig;
 				liveModelSelection.provider = cur.provider;
 				liveModelSelection.model = cur.model;
-				syncModelFollowers();
 				logger.info(`bridge default model now ${sig} (GUI-side switch)`);
-				// Notify follower chats only (per-chat overrides are untouched).
-				for (const r of routeStore.all()) {
-					const o = convCfg.get(r.sessionKey);
-					if (o.provider && o.model) continue;
-					void sender
-						.sendText(
-							r.chatId,
-							`🌐 默认模型已切换: ${sig}（web 界面操作）。本会话已跟随新模型；如需单独指定请用 /model。`,
-						)
-						.catch(() => undefined);
-				}
 			} catch {
 				// best-effort
 			}
