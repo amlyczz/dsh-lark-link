@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2
+
+### Docs
+
+- README mascot image now uses an absolute URL so it renders on npmjs.com (npm does not resolve relative image paths).
+
+---
+
 ## 0.3.1
 
 ### Bugfix: session id collision on idle disposal (GH #5)
