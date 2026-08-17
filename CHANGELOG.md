@@ -8,8 +8,17 @@
 - **Fix**: `dsh-adapter.ts` `disposeIdle` now synchronously removes from `tracked`, bumps `generations`, and THEN fire-and-forgets the async dispose. `conversation-manager.ts` tracks `agentId` per hook and re-attaches the fan-out listener when the agent changes.
 - **Regression test**: `manager: idle sweep then message still gets reply (stale hook after disposal)`
 
+### New: per-conversation workspace / model / mode + hung-turn recovery
+
+- `workspace` / `model` / `mode` overrides are now scoped **per conversation key** (persisted `conversation-overrides.json`); other chats no longer follow a switch when their agent is rebuilt (idle TTL, `/new`, maxSessions pressure).
+- Live model entries are per-key mutable objects for `installModelSelection`; follower chats (no `/model` override) track the bridge default — and the deployment default is polled so a GUI-side model switch is adopted and announced in Feishu.
+- Watchdog: an EMPTY assistant message no longer disarms the turn watchdog (fixes the hung-chat-until-`/new` bug); text chunks and tool events refresh the deadline.
+- Card action callbacks get unique pseudo message ids so a second click on the same card (model picker) is not swallowed by outbox dedupe; `chatType` resolved from the route table instead of hardcoded p2p.
+- `lark_send_local_file` resolves the per-conversation workspace.
+
 ### Other
 
+- Fixed `/lark restart` pgrep pattern to match the `dsh web` invocation.
 - Updated Feishu group invite link.
 
 ---
