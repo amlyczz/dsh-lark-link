@@ -10,7 +10,8 @@ WORKDIR="/home/zand/proj/dsh-lark-link"
 LOG="/tmp/dsh-web-restart.log"
 PORT=3080
 
-OLD_PID=$(pgrep -f "dsh --profile web" | head -1 || true)
+# Match both invocation styles: "dsh web" and "dsh --profile web".
+OLD_PID=$(pgrep -f "bin/dsh (web|--profile web)" | head -1 || true)
 
 if [ -z "${OLD_PID}" ]; then
   echo "[restart] no running 'dsh --profile web' process found; starting fresh…"
