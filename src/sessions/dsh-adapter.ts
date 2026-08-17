@@ -34,16 +34,21 @@ export interface DshAdapterDeps {
 	 * row and the conversation appears to 'switch sessions' mid-chat).
 	 */
 	runNonce?: string;
-	/** Workspace root for created sessions — getter so /workspace hot-swaps. */
-	cwd?: () => string;
-	/** Agent preset id for created sessions — getter so /mode hot-swaps. */
-	preset?: () => string;
+	/** Workspace root for created sessions — per-key getter so /workspace
+	 * hot-swaps ONE conversation without touching others. */
+	cwd?: (key: string) => string;
+	/** Agent preset id for created sessions — per-key getter so /mode
+	 * hot-swaps ONE conversation without touching others. */
+	preset?: (key: string) => string;
 	/**
-	 * LIVE model selection — the same mutable object for every agent, read by
-	 * installModelSelection on each request. Updating its fields switches the
-	 * model WITHOUT rebuilding the agent (the session survives /model).
+	 * LIVE model selection. currentFor(key) returns the mutable object the
+	 * agent for that conversation reads via installModelSelection on each
+	 * request; updating its fields switches the model WITHOUT rebuilding the
+	 * agent. Legacy shape {current} is still accepted (shared by all keys).
 	 */
-	modelSelection?: { current: { provider: string; model: string } };
+	modelSelection?:
+		| { current: { provider: string; model: string } }
+		| { currentFor: (key: string) => { provider: string; model: string } | undefined };
 	/**
 	 * ask_user_question → Feishu bridge. When present, a shadow
 	 * `ask_user_question` tool is registered in each agent scope (overriding
@@ -141,6 +146,18 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 	const c = deps.ctx as unknown as {
 		agents: AgentRegistrySurface;
 	};
+	// Per-key model selection: prefer the per-conversation resolver, fall back
+	// to the legacy shared {current} object. The returned object is expected
+	// to be STABLE and MUTABLE per key (installModelSelection keeps a
+	// reference; mutating its fields switches the model on the next request).
+	const selFor = (
+		key: string,
+	): { provider: string; model: string } | undefined => {
+		const ms = deps.modelSelection;
+		if (!ms) return undefined;
+		if ("currentFor" in ms) return ms.currentFor(key);
+		return ms.current;
+	};
 	const tracked = new Map<string, Tracked>();
 	const keyBySession = new Map<string, string>();
 	const listeners = new Map<string, Set<(e: SessionEventOut) => void>>();
@@ -195,7 +212,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		// and inbound messages never get a reply.
 		// NB: read via ctx.get() — the Cordis Context proxy throws
 		// "cannot get property ... without inject" for undeclared services.
-		const sel = deps.modelSelection?.current;
+		const sel = selFor(key);
 		const defaultModel = sel?.provider && sel.model ? sel : undefined;
 		const agentOptions = defaultModel
 			? {
@@ -214,10 +231,12 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		// exactly as on a freshly created one.
 		const setup = async (agentCtx: Context) => {
 			// Model selection (optional — depends on the deployment
-			// agentDefaultModel service).
-			if (deps.modelSelection?.current) {
+			// agentDefaultModel service). Per-key live object: mutating it (via
+			// /model or a GUI default switch) changes the model WITHOUT rebuild.
+			const sel = selFor(key);
+			if (sel?.provider && sel.model) {
 				installModelSelection(agentCtx, {
-					current: deps.modelSelection.current,
+					current: sel,
 					assembled: undefined,
 				});
 			}
@@ -237,7 +256,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				}
 			).get?.("agentPresets");
 			if (presets?.mount) {
-				await presets.mount(agentCtx, deps.preset?.() ?? "ptc");
+				await presets.mount(agentCtx, deps.preset?.(key) ?? "ptc");
 			}
 			// Shadow ask_user_question: forward DSH intent-confirmation
 			// questions to Feishu cards instead of the GUI-only provider.
@@ -376,8 +395,8 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				// bridge agent has NO bash/fs/goal/subagent tools (session-log
 				// evidence: `Error: unknown tool \"bash\"` / "write_file" / …).
 				meta: {
-					cwd: deps.cwd?.() ?? process.cwd(),
-					agentPreset: deps.preset?.() ?? "ptc",
+					cwd: deps.cwd?.(key) ?? process.cwd(),
+					agentPreset: deps.preset?.(key) ?? "ptc",
 				},
 				...(agentOptions ? { agentOptions } : {}),
 				setup,
@@ -409,8 +428,8 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 					owned = await c.agents.create({
 						sessionId: freshId,
 						meta: {
-							cwd: deps.cwd?.() ?? process.cwd(),
-							agentPreset: deps.preset?.() ?? "ptc",
+							cwd: deps.cwd?.(key) ?? process.cwd(),
+							agentPreset: deps.preset?.(key) ?? "ptc",
 						},
 						...(agentOptions ? { agentOptions } : {}),
 						setup,
@@ -438,7 +457,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		// session is attached to it — otherwise the GUI lists the session under
 		// 未分组 (workspaces are only created+attached when a user picks one in
 		// the UI). Best-effort; failures are logged, never fatal.
-		const wsCwd = deps.cwd?.() ?? process.cwd();
+		const wsCwd = deps.cwd?.(key) ?? process.cwd();
 		try {
 			const workspaces = (
 				c as unknown as {

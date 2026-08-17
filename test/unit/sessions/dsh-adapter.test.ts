@@ -3,6 +3,60 @@ import assert from "node:assert/strict";
 import { createDshAdapter } from "../../../src/sessions/dsh-adapter.ts";
 import type { DshSessionBackend } from "../../../src/sessions/dsh-session-backend.ts";
 
+test("adapter: cwd/preset/modelSelection are resolved PER KEY (no cross-talk)", async () => {
+	const registry = fakeRegistry();
+	const ctx = ctxOf(registry, undefined);
+	const selA = { provider: "p1", model: "m1" };
+	const selB = { provider: "p2", model: "m2" };
+	const backend = createDshAdapter({
+		ctx,
+		sessionPrefix: "lark-link",
+		logger: silentLogger,
+		cwd: (key) => (key === "dm:ou_a" ? "/ws/a" : "/ws/default"),
+		preset: (key) => (key === "dm:ou_b" ? "ptc" : "code"),
+		modelSelection: {
+			currentFor: (key) => (key === "dm:ou_a" ? selA : selB),
+		},
+	});
+	await backend.ensureAgent("dm:ou_a");
+	await backend.ensureAgent("dm:ou_b");
+
+	assert.equal(registry.created.length, 2);
+	const a = registry.created[0] as {
+		meta?: { cwd?: string; agentPreset?: string };
+		agentOptions?: { provider?: string; model?: string };
+	};
+	const b = registry.created[1] as {
+		meta?: { cwd?: string; agentPreset?: string };
+		agentOptions?: { provider?: string; model?: string };
+	};
+	// key A: its own cwd, default preset, its own model
+	assert.equal(a.meta?.cwd, "/ws/a");
+	assert.equal(a.meta?.agentPreset, "code");
+	assert.deepEqual(a.agentOptions, { provider: "p1", model: "m1" });
+	// key B: default cwd, "ptc" alias preset, its own model — NOT A's values
+	assert.equal(b.meta?.cwd, "/ws/default");
+	assert.equal(b.meta?.agentPreset, "ptc");
+	assert.deepEqual(b.agentOptions, { provider: "p2", model: "m2" });
+});
+
+test("adapter: currentFor entries are LIVE objects — mutation switches the model", async () => {
+	const registry = fakeRegistry();
+	const sel = { provider: "p1", model: "m1" };
+	const backend = createDshAdapter({
+		ctx: ctxOf(registry, undefined),
+		sessionPrefix: "lark-link",
+		logger: silentLogger,
+		modelSelection: { currentFor: () => sel },
+	});
+	await backend.ensureAgent("dm:ou_a");
+	// /model mutates the same object the agent's installModelSelection holds.
+	sel.provider = "p2";
+	sel.model = "m2";
+	assert.equal(sel.provider, "p2");
+});
+
+
 /**
  * createDshAdapter against a minimal fake Cordis ctx + fake AgentRegistry.
  * The fake agent re-emits session/event through its own ctx (cordis events).

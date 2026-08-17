@@ -14,6 +14,7 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import { createDshAdapter } from "./sessions/dsh-adapter.ts";
 import { createMemoryDshBackend } from "./sessions/dsh-session-backend.ts";
 import { createConversationManager } from "./sessions/conversation-manager.ts";
+import { createConversationConfigStore } from "./sessions/conversation-config.ts";
 import { createTurnSupervisor } from "./sessions/turn-supervisor.ts";
 import { createOutbox, type OutboxSender } from "./outbound/outbox.ts";
 import { createEventForwarder } from "./outbound/event-forwarder.ts";
@@ -129,6 +130,13 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	// the user's message. Persists in <state>/inbound-wal/.
 	const inboundWal = createInboundWal({ dir: join(dir, "inbound-wal") });
 	const getCfg = (): ReturnType<typeof configStore.get> => configStore.get();
+	// Per-conversation overrides (workspace / model / preset). The bridge-level
+	// config stays the DEFAULT; /workspace, /model and /mode in one chat now
+	// scope to THAT chat only — other chats no longer follow the switch when
+	// their agent is rebuilt (idle TTL, /new, maxSessions pressure).
+	const convCfg = createConversationConfigStore(
+		join(dir, "conversation-overrides.json"),
+	);
 
 	// ---- permission default sync ---------------------------------------------
 	// The bridge config `permissionMode` ("read-only | workspace-write |
@@ -183,26 +191,68 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	syncDefaultPermission();
 
 	// ---- backend: real DSH adapter, falling back to the in-memory mock ------
-	// LIVE model selection shared by every agent: /model mutates this object,
-	// installModelSelection reads it per request, so switching the model does
-	// NOT rebuild/destroy the current session.
+	// LIVE model selection: liveModelSelection is the bridge-wide DEFAULT
+	// (initialized from the deployment agentDefaultModel service; a GUI-side
+	// default switch is picked up by the poll started in startBridge). Each
+	// conversation gets its own mutable entry via liveModelFor(key) —
+	// installModelSelection keeps a reference to it, so mutating the entry
+	// switches that conversation's model WITHOUT rebuilding its agent.
+	// Entries WITHOUT a per-key /model override are "followers" that track
+	// the bridge default; entries with an override keep their own model.
 	const liveModelSelection = { provider: "", model: "" };
+	const admService = (
+		ctx as unknown as {
+			get?(
+				name: string,
+			):
+				| {
+						currentSelection?():
+							| { provider?: string; model?: string }
+							| undefined;
+						saveSelection?(s: {
+							provider: string;
+							model: string;
+						}): Promise<unknown>;
+				  }
+				| undefined;
+		}
+	).get?.("agentDefaultModel");
 	{
-		const adm = (
-			ctx as unknown as {
-				get?(
-					name: string,
-				):
-					| { currentSelection?(): { provider?: string; model?: string } }
-					| undefined;
-			}
-		).get?.("agentDefaultModel");
-		const cur = adm?.currentSelection?.();
+		const cur = admService?.currentSelection?.();
 		if (cur?.provider && cur.model) {
 			liveModelSelection.provider = cur.provider;
 			liveModelSelection.model = cur.model;
 		}
 	}
+	const liveModels = new Map<
+		string,
+		{ provider: string; model: string; override: boolean }
+	>();
+	const liveModelFor = (
+		key: string,
+	): { provider: string; model: string; override: boolean } => {
+		let m = liveModels.get(key);
+		if (!m) {
+			const o = convCfg.get(key);
+			m = {
+				provider: o.provider ?? liveModelSelection.provider,
+				model: o.model ?? liveModelSelection.model,
+				override: Boolean(o.provider && o.model),
+			};
+			liveModels.set(key, m);
+		}
+		return m;
+	};
+	// Push a bridge-default change into every follower entry (conversations
+	// that never ran /model themselves). Override entries keep their model.
+	const syncModelFollowers = (): void => {
+		for (const m of liveModels.values()) {
+			if (!m.override) {
+				m.provider = liveModelSelection.provider;
+				m.model = liveModelSelection.model;
+			}
+		}
+	};
 	// Fresh per-run nonce — NEVER persisted. (352af88 persisted it so bridge
 	// session ids survive restarts, but that makes a restarted bridge reuse a
 	// session id whose on-disk log does not match the live session, and
@@ -221,12 +271,21 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			sessionPrefix: "lark-link",
 			runNonce,
 			logger,
-			cwd: () => getCfg().workspaceRoot || process.cwd(),
-			preset: () => {
-				const p = getCfg().agentPreset || "code";
+			// Per-key resolution: conversation override ?? bridge default.
+			cwd: (key: string) =>
+				convCfg.get(key).workspaceRoot ??
+				(getCfg().workspaceRoot || process.cwd()),
+			preset: (key: string) => {
+				const p =
+					convCfg.get(key).preset ?? (getCfg().agentPreset || "code");
 				return p === "ptc" ? "code" : p; // 别名兼容
 			},
-			modelSelection: { current: liveModelSelection },
+			modelSelection: {
+				currentFor: (key: string) => {
+					const m = liveModelFor(key);
+					return m.provider && m.model ? m : undefined;
+				},
+			},
 			askUserQuestion,
 		});
 	} catch (err) {
@@ -862,10 +921,15 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				return true;
 			case "workspace": {
 				const arg = _rawInput.trim();
+				const wsKey = bridge.conversationKeyFor(msg);
+				// Per-conversation workspace: this chat's override ?? bridge default.
+				const curWs =
+					convCfg.get(wsKey).workspaceRoot ??
+					(getCfg().workspaceRoot || process.cwd());
 				if (!arg) {
 					await durableReply(name, 
 						msg,
-						`工作区: ${getCfg().workspaceRoot || process.cwd()}`,
+						`工作区: ${curWs}`,
 					);
 					return true;
 				}
@@ -878,9 +942,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						? join(homedir(), arg.slice(arg.startsWith("~/") ? 2 : 1))
 						: arg;
 				const target = resolve(
-					expanded.startsWith("/")
-						? expanded
-						: join(getCfg().workspaceRoot || process.cwd(), expanded),
+					expanded.startsWith("/") ? expanded : join(curWs, expanded),
 				);
 				if (!target.startsWith("/")) {
 					await durableReply(name, msg, `无效路径: ${arg}`);
@@ -895,8 +957,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					await durableReply(name, msg, `目录不存在: ${target}`);
 					return true;
 				}
-				configStore.update({ workspaceRoot: target });
-				configStore.saveOverrides();
+				// Scope the switch to THIS conversation only (per-key override).
+				// The bridge default is untouched, so other chats keep their
+				// workspace even when their agent is later rebuilt.
+				convCfg.set(wsKey, { workspaceRoot: target });
 				// Only the current conversation rebuilds (next message) — other
 				// conversations keep their agents/sessions. rotate() (NOT dispose):
 				// dispose() tears down the agent AND removes its session from the
@@ -923,35 +987,28 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// message opens a NEW session row (never forwarded to the model).
 				const key = bridge.conversationKeyFor(msg);
 				await conversations?.rotate(key);
+				const newWs =
+					convCfg.get(key).workspaceRoot ??
+					(getCfg().workspaceRoot || process.cwd());
 				await durableReply(name, 
 					msg,
-					`已开启新会话（工作区: ${getCfg().workspaceRoot || process.cwd()}）。下一条消息开始全新上下文。`,
+					`已开启新会话（工作区: ${newWs}）。下一条消息开始全新上下文。`,
 				);
 				return true;
 			}
 			case "model": {
 				// /model — list the current model + available models (no arg) or
-				// switch: /model <provider>/<model> | /model <model>. The bridge
-				// agents snapshot their model at creation, so a switch rebuilds
-				// hosted sessions (next message uses the new model).
+				// switch: /model <provider>/<model> | /model <model>. The switch is
+				// scoped to THIS conversation (per-key override + live entry): the
+				// agent reads the live entry via installModelSelection, so the model
+				// changes on the next reply WITHOUT rebuilding the session, and no
+				// other chat follows the switch.
 				const arg = _rawInput.trim();
+				const modelKey = bridge.conversationKeyFor(msg);
+				const mine = liveModelFor(modelKey);
 				const services = ctx as unknown as {
 					get?(name: string): unknown;
 				};
-				const adm = services.get?.("agentDefaultModel") as
-					| {
-							currentSelection?():
-								| {
-										provider?: string;
-										model?: string;
-								  }
-								| undefined;
-							saveSelection?(s: {
-								provider: string;
-								model: string;
-							}): Promise<unknown>;
-					  }
-					| undefined;
 				const llm = services.get?.("llm") as
 					| {
 							listProviders?(): Array<{ id?: string; name?: string }>;
@@ -960,7 +1017,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 							): Promise<Array<{ id: string; name?: string }>>;
 					  }
 					| undefined;
-				const current = adm?.currentSelection?.();
+				const current =
+					mine.provider && mine.model
+						? { provider: mine.provider, model: mine.model }
+						: admService?.currentSelection?.();
 				if (!arg) {
 					// Picker card grouped by provider (single-select, no typing).
 					const groups: Array<{
@@ -1002,27 +1062,18 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					);
 					return true;
 				}
-				if (!adm?.saveSelection) {
-					await durableReply(name, msg, "模型切换服务不可用");
-					return true;
-				}
-				try {
-					await adm.saveSelection({ provider, model });
-				} catch (err) {
-					await durableReply(name, 
-						msg,
-						`模型切换失败: ${err instanceof Error ? err.message : String(err)}`,
-					);
-					return true;
-				}
-				// Update the LIVE selection — every agent's next request reads it
-				// via installModelSelection, so NO rebuild/dispose needed and the
-				// current session survives the switch.
-				liveModelSelection.provider = provider;
-				liveModelSelection.model = model;
+				// Scope to THIS conversation: persist the per-key override and
+				// mutate the live entry — the agent's installed selection object
+				// IS this entry, so the next reply uses the new model without a
+				// rebuild. The bridge default (and other chats) are untouched.
+				convCfg.set(modelKey, { provider, model });
+				const entry = liveModelFor(modelKey);
+				entry.provider = provider;
+				entry.model = model;
+				entry.override = true;
 				await durableReply(name, 
 					msg,
-					`模型已切换: ${provider}/${model}\n当前会话下次回复生效（会话不中断）。`,
+					`模型已切换: ${provider}/${model}\n本会话下次回复生效（会话不中断，其他会话不受影响）。`,
 				);
 				return true;
 			}
@@ -1054,8 +1105,8 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					);
 					return true;
 				}
-				configStore.update({ agentPreset: arg });
-				configStore.saveOverrides();
+				// Per-conversation preset override — other chats keep theirs.
+				convCfg.set(bridge.conversationKeyFor(msg), { preset: arg });
 				// Agent presets snapshot at agent creation — an existing session's
 				// agent CANNOT change mode mid-flight. rotate() (NOT dispose): mints
 				// a fresh runNonce so the next message opens a brand-new session in
@@ -1238,11 +1289,21 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			const sep = op.indexOf(":");
 			const cmd = sep === -1 ? op : op.slice(0, sep);
 			const arg = sep === -1 ? "" : op.slice(sep + 1);
+			// messageId must be UNIQUE per click: durableReply dedupes command
+			// replies by `bridge:<cmd>:<messageId>`, and the card message id is
+			// the same for every click on that card — a second click (e.g.
+			// picking another model from the picker) used to be swallowed as a
+			// duplicate, so the user got NO confirmation for the new choice.
+			// chatType: reuse the known route for this chat so the pseudo message
+			// lands on the right conversation lane (group vs dm).
+			const knownRoute = routeStore.all().find((r) => r.chatId === chatId);
 			const pseudo: FeishuInboundMessage = {
-				messageId,
+				messageId: messageId
+					? `${messageId}#${op}`
+					: `card#${Date.now()}#${op}`,
 				chatId,
-				chatType: "p2p",
-				chatMode: "p2p",
+				chatType: knownRoute?.chatType === "group" ? "group" : "p2p",
+				chatMode: knownRoute?.chatType === "group" ? "group_all" : "p2p",
 				senderOpenId: chatId,
 				msgType: "interactive",
 				content: "",
@@ -1288,15 +1349,29 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			void forwarder
 				.onSessionEvent(key, event)
 				.catch((e) => logger.warn(`forwarder: ${String(e)}`));
-			// Arm the turn watchdog when a turn opens; disarm on completion/output.
-			// (Previously arm was never called — the watchdog was dead code.)
+			// Arm the turn watchdog when a turn opens; disarm ONLY on real
+			// (non-empty) output or turn end. An EMPTY assistant message (e.g.
+			// reasoning models emit content-less messages) must NOT disarm the
+			// watchdog — that is exactly how a hung turn used to disable its
+			// own recovery and kill the chat until /new. Any observable
+			// progress (text chunks, tool calls/results) refreshes the deadline.
 			if (event.type === "turn/start") {
 				turnDelivered.delete(key);
 				turnSupervisor.arm(key);
 			}
+			if (event.type === "assistant/chunk") {
+				if ((event.text ?? "").trim() !== "") turnSupervisor.arm(key);
+			}
+			if (event.type === "tool/call" || event.type === "tool/result") {
+				turnSupervisor.arm(key); // tools run long legitimately — extend
+			}
 			if (event.type === "assistant/message") {
-				turnSupervisor.disarm(key);
-				if ((event.text ?? "").trim() !== "") turnDelivered.add(key);
+				if ((event.text ?? "").trim() !== "") {
+					turnSupervisor.disarm(key);
+					turnDelivered.add(key);
+				} else {
+					turnSupervisor.arm(key); // empty message — refresh, stay armed
+				}
 			}
 			if (event.type === "turn/end") {
 				turnSupervisor.disarm(key);
@@ -1350,6 +1425,54 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		logger,
 	});
 
+	// ---- GUI-side model default poll -----------------------------------------
+	// The deployment default model can change outside the bridge (dsh web UI).
+	// The bridge used to sample it exactly once at boot, so a GUI switch was
+	// never reflected (chats kept the old model) and never announced. Poll the
+	// agentDefaultModel service; on change: adopt it as the bridge default,
+	// push it into follower conversations (those WITHOUT a per-chat /model
+	// override), and notify the affected Feishu chats which model is in effect.
+	let lastModelSig =
+		liveModelSelection.provider && liveModelSelection.model
+			? `${liveModelSelection.provider}/${liveModelSelection.model}`
+			: "";
+	let modelPollTimer: NodeJS.Timeout | undefined;
+	const startModelDefaultPoll = (): void => {
+		if (modelPollTimer || !admService?.currentSelection) return;
+		const t = setInterval(() => {
+			try {
+				const cur = admService?.currentSelection?.();
+				if (!cur?.provider || !cur.model) return;
+				const sig = `${cur.provider}/${cur.model}`;
+				if (sig === lastModelSig) return;
+				lastModelSig = sig;
+				liveModelSelection.provider = cur.provider;
+				liveModelSelection.model = cur.model;
+				syncModelFollowers();
+				logger.info(`bridge default model now ${sig} (GUI-side switch)`);
+				// Notify follower chats only (per-chat overrides are untouched).
+				for (const r of routeStore.all()) {
+					const o = convCfg.get(r.sessionKey);
+					if (o.provider && o.model) continue;
+					void sender
+						.sendText(
+							r.chatId,
+							`🌐 默认模型已切换: ${sig}（web 界面操作）。本会话已跟随新模型；如需单独指定请用 /model。`,
+						)
+						.catch(() => undefined);
+				}
+			} catch {
+				// best-effort
+			}
+		}, 10_000);
+		t.unref?.();
+		modelPollTimer = t;
+	};
+	const stopModelDefaultPoll = (): void => {
+		if (modelPollTimer) clearInterval(modelPollTimer);
+		modelPollTimer = undefined;
+	};
+
 	// ---- lifecycle -------------------------------------------------------------
 	let lifecycleStarted = false;
 	let supervisor: ReturnType<typeof createConnectionSupervisor> | undefined;
@@ -1387,6 +1510,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		outbox.rebuildFromDisk();
 		outbox.start();
 		turnSupervisor.start();
+		startModelDefaultPoll();
 
 		// Transport + supervisor (in-process): WS long connection owns reconnects
 		// via probe-driven supervisor; card actions route through the same handler.
@@ -1512,6 +1636,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		if (!lifecycleStarted) return;
 		logger.info("stopping bridge…");
 		turnSupervisor.stop();
+		stopModelDefaultPoll();
 		await supervisor?.stop();
 		supervisor = undefined;
 		await outbox.stop();
@@ -1546,22 +1671,27 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				render: (_args, value) => [{ type: "text", text: value as string }],
 			},
 			async execute(args, exec) {
-				// The agent's workspace is config.workspaceRoot (may differ from
-				// the dsh process cwd after /workspace) — resolve relative paths
-				// against it and whitelist it. Using process.cwd() wrongly
-				// rejects files the agent just created in its workspace.
-				const workspaceRoot = getCfg().workspaceRoot || process.cwd();
+				// Resolve the requesting conversation FIRST: exec.agent.id is the
+				// bridge session id (lark-link:dm:ou_x:nonce). The session id
+				// carries the per-run nonce suffix while route keys do not —
+				// prefer the backend reverse map, else strip the trailing nonce.
+				const sessionId = (exec as { agent?: { id?: string } }).agent?.id ?? "";
+				// The agent's workspace is its conversation's workspace (per-key
+				// override ?? config.workspaceRoot; may differ from the dsh process
+				// cwd after /workspace) — resolve relative paths against it and
+				// whitelist it. Using process.cwd() wrongly rejects files the agent
+				// just created in its workspace.
+				const convKeyForWs =
+					bridge.backend?.keyForSessionId?.(sessionId) ?? sessionId;
+				const workspaceRoot =
+					convCfg.get(convKeyForWs).workspaceRoot ??
+					(getCfg().workspaceRoot || process.cwd());
 				const abs = resolve(
 					args.path.startsWith("/")
 						? args.path
 						: join(workspaceRoot, args.path),
 				);
 				if (!abs.startsWith(workspaceRoot)) return "拒绝: 路径不在工作区内";
-				// Resolve the requesting conversation: exec.agent.id is the bridge
-				// session id (lark-link:dm:ou_x:nonce). The session id carries the
-				// per-run nonce suffix while route keys do not — prefer the backend
-				// reverse map, else strip the trailing nonce.
-				const sessionId = (exec as { agent?: { id?: string } }).agent?.id ?? "";
 				const prefix = "lark-link:";
 				const backendKey = bridge.backend?.keyForSessionId?.(sessionId);
 				const key =
