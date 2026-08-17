@@ -49,6 +49,7 @@ export function createConversationManager(
 ): ConversationManager {
 	const queues = new Map<string, Promise<unknown>>(); // per-key serial chain
 	const hooks = new Map<string, () => void>(); // key -> detach (one listener per agent)
+	const hooksAgent = new Map<string, string>(); // key -> agentId (detect stale hook after idle disposal)
 
 	const keyFor = (msg: FeishuInboundMessage): string =>
 		msg.chatType === "p2p" ? `dm:${msg.chatId}` : `group:${msg.chatId}`;
@@ -83,9 +84,14 @@ export function createConversationManager(
 			await ensureUnderCap();
 			const agent: AgentHandle = await deps.backend.ensureAgent(key);
 			// Attach the fan-out listener exactly once per agent.
-			if (!hooks.has(key)) {
+			// Re-attach if the agent changed (e.g. after idle disposal + recreation,
+			// the old hook is stale and won't forward the new agent's events).
+			const prevAgentId = hooksAgent.get(key);
+			if (!hooks.has(key) || prevAgentId !== agent.agentId) {
+				hooks.get(key)?.(); // detach stale hook (no-op if same agent)
 				const detach = agent.onEvent((e) => deps.onEvent?.(key, e));
 				hooks.set(key, detach);
+				hooksAgent.set(key, agent.agentId);
 			}
 			const text = msg.text ?? msg.content ?? "";
 			await enqueueSerial(key, async () => {
@@ -103,6 +109,7 @@ export function createConversationManager(
 		async dispose(key) {
 			hooks.get(key)?.();
 			hooks.delete(key);
+			hooksAgent.delete(key);
 			queues.delete(key);
 			await deps.backend.dispose(key);
 		},
@@ -118,6 +125,7 @@ export function createConversationManager(
 			// hook would swallow the NEW agent's events — no reply after /new.
 			hooks.get(key)?.();
 			hooks.delete(key);
+			hooksAgent.delete(key);
 			queues.delete(key);
 			deps.backend.rotate(key);
 		},
@@ -130,6 +138,7 @@ export function createConversationManager(
 		async disposeAll() {
 			for (const detach of hooks.values()) detach();
 			hooks.clear();
+			hooksAgent.clear();
 			await deps.backend.disposeAll();
 			queues.clear();
 		},

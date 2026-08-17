@@ -619,14 +619,24 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			}
 		},
 		disposeIdle(idleTtlMs) {
-			let n = 0;
-			for (const t of tracked.values()) {
+			// Collect entries to dispose: remove from tracked synchronously
+			// so the next ensureAgent() sees the key as vacant and creates
+			// a fresh agent. Bump the generation so the new session id does
+			// NOT collide with the persisted log left by the disposed agent
+			// (fixes issue #5: session id collision -> silent message drop).
+			const toDispose: Array<{ key: string; handle: AgentHandle }> = [];
+			for (const [key, t] of tracked) {
 				if (t.handle.isIdle() && Date.now() - t.lastUsedAt >= idleTtlMs) {
-					void t.handle.dispose();
-					n++;
+					toDispose.push({ key, handle: t.handle });
 				}
 			}
-			return n;
+			for (const { key, handle } of toDispose) {
+				tracked.delete(key);
+				keyBySession.delete(handle.sessionId);
+				generations.set(key, (generations.get(key) ?? 0) + 1);
+				void handle.dispose();
+			}
+			return toDispose.length;
 		},
 		size: () => tracked.size,
 		rotate(key) {

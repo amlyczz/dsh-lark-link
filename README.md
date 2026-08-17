@@ -21,7 +21,7 @@
 
 > 全网统一昵称：**小斯syzs** · B站 [@小斯syzs](https://space.bilibili.com/390211071) · 抖音 · 小红书 · 快手（全网同名）
 
-> 💬 **小斯syzs 邀请你加入飞书群** —— [点此一键加入](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=392u206d-9072-4d73-b6ea-8eb93adcc699)
+> 💬 **小斯syzs 邀请你加入飞书群** —— [点此一键加入](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=553i2f4a-5cc8-487f-95d3-3c4095bec0d9)
 
 **DeepSeek Harness × 飞书/Lark 双向桥接插件** —— 把你的 DSH 智能体（DeepSeek Harness）装进飞书：扫码 30 秒上线、消息零丢失、卡片化交互、每飞书会话独立 Agent。
 
@@ -119,7 +119,7 @@ npm pack           # 产出可分发 tarball
 
 **小斯syzs 邀请你加入飞书群**，可以交流使用问题、反馈建议、一起玩 DSH × 飞书：
 
-👉 [https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=392u206d-9072-4d73-b6ea-8eb93adcc699](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=392u206d-9072-4d73-b6ea-8eb93adcc699)
+👉 [https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=553i2f4a-5cc8-487f-95d3-3c4095bec0d9](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=553i2f4a-5cc8-487f-95d3-3c4095bec0d9)
 
 ## 📄 许可
 
@@ -189,7 +189,7 @@ npm run dev:link && npm run check && npm test && npm run build
 
 **小斯syzs** invites you to join the Feishu group — ask questions, share feedback, and play with DSH × Feishu together:
 
-👉 [https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=392u206d-9072-4d73-b6ea-8eb93adcc699](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=392u206d-9072-4d73-b6ea-8eb93adcc699)
+👉 [https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=553i2f4a-5cc8-487f-95d3-3c4095bec0d9](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=553i2f4a-5cc8-487f-95d3-3c4095bec0d9)
 
 ## 📄 License
 

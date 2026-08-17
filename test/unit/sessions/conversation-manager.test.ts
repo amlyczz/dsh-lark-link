@@ -156,3 +156,35 @@ test("manager: /new then a message still gets a reply (stale hook dropped)", asy
 	);
 	await cm.disposeAll();
 });
+
+test("manager: idle sweep then message still gets reply (stale hook after disposal)", async () => {
+	const backend = createMemoryDshBackend({ autoReply: () => "reply-after-sweep" });
+	const events: string[] = [];
+	const cm = createConversationManager({
+		backend,
+		maxSessions: 8,
+		idleTtlMs: 0, // idleTtlMs=0 means immediate idle sweep
+		onEvent: (key, e) => events.push(`${key}:${e.type}`),
+	});
+
+	// First message → agent created
+	await cm.handleMessage(mkMsg("ou_a", "p2p", "before-sweep"));
+	await new Promise((r) => setTimeout(r, 50));
+	assert.equal(backend.size(), 1, "one agent after first message");
+
+	// Sweep: idleTtlMs=0 means the agent is immediately eligible for disposal
+	const swept = cm.sweep();
+	assert.ok(swept >= 1, "swept idle agent");
+	assert.equal(backend.size(), 0, "agent disposed after sweep");
+
+	// Second message → new agent created; events MUST still fan out
+	events.length = 0;
+	await cm.handleMessage(mkMsg("ou_a", "p2p", "after-sweep"));
+	await new Promise((r) => setTimeout(r, 100));
+
+	assert.ok(
+		events.some((e) => e === "dm:ou_a:assistant/message"),
+		"reply after idle sweep must be fanned out (stale hook re-attached)",
+	);
+	await cm.disposeAll();
+});
