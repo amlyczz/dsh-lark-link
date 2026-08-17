@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1
+
+### Bugfix: session id collision on idle disposal (GH #5)
+
+- **Root cause**: when `disposeIdle` removed an agent, the `generations` counter was not bumped. The next `ensureAgent()` reused the same session id, which collided with the persisted log left by the disposed agent — DSH rejected the first turn with "id collision", silently dropping the message.
+- **Fix**: `dsh-adapter.ts` `disposeIdle` now synchronously removes from `tracked`, bumps `generations`, and THEN fire-and-forgets the async dispose. `conversation-manager.ts` tracks `agentId` per hook and re-attaches the fan-out listener when the agent changes.
+- **Regression test**: `manager: idle sweep then message still gets reply (stale hook after disposal)`
+
+### Other
+
+- Updated Feishu group invite link.
+
+---
 ## 0.3.0
 
 **新增：入站请求补发（服务中断/插件更新/dsh 重启也能把没回答的消息补回来）**
