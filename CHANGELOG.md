@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.3
+
+### Fix: GUI model switch no longer leaks into other conversations / workspaces
+
+- **Root cause**: a model switch in the DSH Web GUI writes the GLOBAL `agentDefaultModel` service. The bridge's poll detected the change and `syncModelFollowers()` actively pushed the new default into every conversation that had never run `/model` itself, plus sent a "default model changed" notification. Result: switching the model in one chat (or one workspace) silently changed other chats and other workspaces.
+- **Fix**: removed the follower push + notification. A GUI-side switch now only affects conversations created AFTER the switch; every existing conversation keeps its own model (whether set via `/model` or the default it had at first use). Feishu-side `/model` was already per-conversation and is unchanged.
+
+### Fix: bridge fails to start — dangling `@larksuiteoapi/node-sdk` symlink
+
+- **Root cause**: `node_modules/@larksuiteoapi/node-sdk` was a symlink pointing into a deleted sibling project, so `buildLarkClient`'s dynamic import threw "Cannot find package" and `startBridge` silently bailed (startBlocker set, no status write, no WS connection). Feishu messages were never received.
+- **Fix**: replaced the dangling symlink with a real `npm install` of the SDK. Verified end-to-end with real credentials (bot info + WS long connection).
+
+---
+
 ## 0.3.2
 
 ### Docs
