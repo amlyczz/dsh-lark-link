@@ -94,3 +94,25 @@ test("router: /resume is a Tier-1 bridge command (handled before DSH tier)", asy
   assert.equal(await router.route(mkMsg("/resume 2")), "bridge");
   assert.deepEqual(seen, ["resume", "resume"]);
 });
+
+test("router: commands with leading @mentions in group chats route correctly", async () => {
+  const seen: string[] = [];
+  const { router } = makeRouter({
+    dshHas: ["compact"],
+    bridgeHandler: async (name) => {
+      seen.push(name);
+      return ["status", "help"].includes(name);
+    },
+  });
+  // Feishu placeholder mention: @_user_1 /status
+  assert.equal(await router.route(mkMsg("@_user_1 /status")), "bridge");
+  // Bot name mention: @小斯 /help
+  assert.equal(await router.route(mkMsg("@小斯 /help")), "bridge");
+  // XML at-tag: <at user_id="ou_xxx">@bot</at> /status
+  assert.equal(await router.route(mkMsg('<at user_id="ou_xxx">@bot</at> /status')), "bridge");
+  // DSH command with mention: @_user_1 /compact old
+  assert.equal(await router.route(mkMsg("@_user_1 /compact old")), "dsh");
+  // Plain text with mention: @_user_1 你好 -> agent
+  assert.equal(await router.route(mkMsg("@_user_1 你好")), "agent");
+  assert.deepEqual(seen, ["status", "help", "status"]);
+});

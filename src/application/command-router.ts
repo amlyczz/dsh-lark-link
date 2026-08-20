@@ -57,15 +57,29 @@ const BRIDGE_COMMANDS = new Set([
 	"resume",
 ]);
 
+export function stripLeadingMentions(text: string): string {
+	let cur = text.trim();
+	while (true) {
+		const next = cur.replace(/^(?:<at[^>]*>.*?<\/at>|@\S+)\s*/i, "").trim();
+		if (next === cur) break;
+		cur = next;
+	}
+	return cur;
+}
+
 export function createCommandRouter(deps: CommandRouterDeps): CommandRouter {
 	return {
 		isCommand(text) {
-			return /^\//.test(text.trim());
+			const cleaned = stripLeadingMentions(text);
+			return /^\//.test(cleaned);
 		},
 		async route(msg) {
-			const text = (msg.text ?? msg.content ?? "").trim();
+			const rawText = (msg.text ?? msg.content ?? "").trim();
+			if (rawText === "") return "skipped";
+
+			const text = stripLeadingMentions(rawText);
 			if (text === "") return "skipped";
-			if (!this.isCommand(text)) return "agent"; // plain message → agent
+			if (!this.isCommand(rawText)) return "agent"; // plain message → agent
 
 			// Tier 1: bridge-specific
 			const tokens = text.split(/\s+/);

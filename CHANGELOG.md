@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1
+
+### Fix: 流式卡片 400 修复 + 降级兜底吞消息修复
+- **CardKit 2.0 请求体规范修复**：移除 `config` 内非法的 `summary` 字段，显式补充 `update_multi: true`，`markdown` 元素内容为空时增加空格占位，解决飞书 API 报错 400 的问题。
+- **流式失败/disposed 时消息静默吞没修复**：此前当流式卡片创建失败（disposed）后，`finalize()` 返回空字符串而未抛出异常，导致 `event-forwarder` 误以为投递成功直接退出、未落入 durable outbox 造成最终回复丢失。现保证流式卡片创建失败或 disposed 时，`event-forwarder` 100% 无缝回退至 durable outbox 发送完整回复。
+
+### Fix: 群聊 @机器人 命令识别与 Prompt 清理
+- **群聊命令识别**：支持过滤群聊中用户 `@机器人`（包括 `<at>` 标签与 `@_user_1` 占位符）前缀，使 `/help`、`/status`、`/mode`、`/new`、`/workspace`、`/lark-config` 等所有命令在群聊艾特场景下均可正常触发执行。
+- **Agent Prompt 清理**：入站群聊消息在转发给 Agent 前自动剥离前导 `@` 标识，避免 Agent 模型混淆。
+
 ## 0.4.0
 
 ### Follow-up fixes (发布前自测反馈)

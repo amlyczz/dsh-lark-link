@@ -101,22 +101,24 @@ export function createCardKitStream(
   const cardJson = (text: string, streaming: boolean): string =>
     JSON.stringify({
       schema: CARD_SCHEMA,
-      ...(streaming
-        ? {
-            config: {
+      config: {
+        update_multi: true,
+        ...(streaming
+          ? {
               streaming_mode: true,
               streaming_config: {
                 print_frequency_ms: { default: opts.printFrequencyMs ?? 120 },
                 print_step: { default: opts.printStep ?? 3 },
                 print_strategy: "fast",
               },
-              summary: { content: "" },
-            },
-          }
-        : {}),
+            }
+          : {
+              streaming_mode: false,
+            }),
+      },
       body: {
         elements: [
-          { tag: "markdown", content: text, element_id: STREAM_ELEMENT_ID },
+          { tag: "markdown", content: text || " ", element_id: STREAM_ELEMENT_ID },
         ],
       },
     });
@@ -149,7 +151,7 @@ export function createCardKitStream(
         // First chunk: create the streaming entity AND deliver it — an
         // undelivered entity is invisible to the user.
         try {
-          const created = await opts.api.createCard(createPayload("", true));
+          const created = await opts.api.createCard(createPayload(acc || " ", true));
           cardId = extractCardId(created);
           if (!cardId) throw new Error("CardKit create returned no card_id");
           await opts.api.deliverCard(cardId);
@@ -178,14 +180,17 @@ export function createCardKitStream(
       }
     },
     async finalize(fullText) {
-      if (disposed) return cardId ?? "";
+      if (disposed) {
+        if (!cardId) throw new Error("CardKit stream handle was disposed (creation failed)");
+        return cardId;
+      }
       const text = fullText || acc;
       if (!cardId) {
         // Never streamed a chunk — create a plain (non-streaming) card with
         // the full content and deliver it. Failure PROPAGATES so the caller
         // falls back to the durable outbox (content must not be lost).
         try {
-          const created = await opts.api.createCard(createPayload(text, false));
+          const created = await opts.api.createCard(createPayload(text || " ", false));
           cardId = extractCardId(created);
           if (!cardId) throw new Error("CardKit create returned no card_id");
           await opts.api.deliverCard(cardId);
@@ -211,7 +216,7 @@ export function createCardKitStream(
       // 2) PUT the full content — the durable delivery. Failure propagates.
       try {
         await opts.api.updateCard(id, {
-          card: { type: "card_json", data: cardJson(text, false) },
+          card: { type: "card_json", data: cardJson(text || " ", false) },
           sequence: nextSeq(),
           uuid: randomUUID(),
         });

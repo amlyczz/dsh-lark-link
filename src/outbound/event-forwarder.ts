@@ -121,11 +121,12 @@ export function createEventForwarder(deps: EventForwarderDeps): EventForwarder {
         st.acc = "";
         if (!text || text.trim() === "" || text === "No response.") return;
         st.hasOutput = true;
-        if (st.stream) {
+        if (st.stream && !st.stream.disposed) {
           // Streaming card active: settle it. On ANY failure fall through to
           // the durable outbox so content is never lost.
           try {
-            await st.stream.finalize(text);
+            const finalId = await st.stream.finalize(text);
+            if (!finalId) throw new Error("CardKit finalize returned empty cardId");
             st.stream = undefined;
             deps.onDelivered?.(sessionKey); // card is final — treat as delivered
             return;

@@ -11,6 +11,7 @@ import type {
 	AttachmentInput,
 } from "./dsh-session-backend.ts";
 import type { FeishuInboundMessage } from "../common/types.ts";
+import { stripLeadingMentions } from "../application/command-router.ts";
 
 export interface ConversationManagerDeps {
 	backend: DshSessionBackend;
@@ -93,7 +94,8 @@ export function createConversationManager(
 				hooks.set(key, detach);
 				hooksAgent.set(key, agent.agentId);
 			}
-			const text = msg.text ?? msg.content ?? "";
+			const rawText = msg.text ?? msg.content ?? "";
+			const text = stripLeadingMentions(rawText) || rawText;
 			await enqueueSerial(key, async () => {
 				try {
 					await agent.followup(text, attachments);

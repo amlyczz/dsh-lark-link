@@ -70,8 +70,9 @@ test("cardkit: first patch creates a streaming card entity and delivers it", asy
 
   const card = createPayloadOf(calls);
   assert.equal(card.schema, CARD_SCHEMA);
-  const config = card.config as { streaming_mode: boolean; streaming_config: { print_frequency_ms: { default: number }; print_step: { default: number } } };
+  const config = card.config as { streaming_mode: boolean; update_multi?: boolean; streaming_config: { print_frequency_ms: { default: number }; print_step: { default: number } } };
   assert.equal(config.streaming_mode, true, "card created with streaming_mode on");
+  assert.equal(config.update_multi, true, "card created with update_multi true");
   assert.equal(config.streaming_config.print_frequency_ms.default, 1);
   assert.equal(config.streaming_config.print_step.default, 3);
   const elements = (card.body as { elements: Array<{ tag: string; element_id: string }> }).elements;
@@ -163,8 +164,7 @@ test("cardkit: create failure disposes (no crash) and surfaces onError", async (
   await stream.patch("x");
   assert.ok(onError, "error surfaced");
   assert.equal(stream.disposed, true);
-  const id = await stream.finalize("y");
-  assert.equal(id, "");
+  await assert.rejects(() => stream.finalize("y"));
 });
 
 test("cardkit: deliver failure after create disposes and surfaces", async () => {

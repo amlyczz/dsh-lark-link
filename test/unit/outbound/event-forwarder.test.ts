@@ -142,3 +142,46 @@ test("forwarder: finalizeSession flushes pending stream-only text", async () => 
   const texts = sent.filter((p) => (p as { kind: string }).kind === "text");
   assert.ok(texts.some((t) => (t as { text: string }).text === "pending text"));
 });
+
+test("forwarder: stream handle disposed mid-turn falls through to outbox for final delivery", async () => {
+  const sent: unknown[] = [];
+  const sender: OutboxSender = {
+    async deliver(_env, payload) {
+      sent.push(payload);
+      return { ok: true };
+    },
+  };
+  const outbox: Outbox = createOutbox({
+    dir: tempDir("fw-disposed-"),
+    sender,
+    cfg: { maxAttempts: 5, backoffMaxMs: 100, retainDays: 7, pendingCap: 1000, blobThreshold: 24_000 },
+  });
+  outbox.rebuildFromDisk();
+  outbox.start();
+
+  const fakeStream: CardKitStreamHandle = {
+    cardId: "",
+    disposed: true, // e.g. createCard threw 400 on the first chunk
+    async patch() {},
+    async finalize() {
+      throw new Error("Stream handle was disposed");
+    },
+  };
+  const fw = createEventForwarder({
+    outbox,
+    routeFor: (key) => (key === "dm:ou_x" ? route : undefined),
+    streamFor: () => ({
+      route: routeRef,
+      ensureStream: () => fakeStream,
+      fallbackText: async () => {},
+      markDone: async () => {},
+    }),
+    cfg: () => ({ streamingEnabled: true }),
+  });
+
+  await fw.onSessionEvent("dm:ou_x", { type: "assistant/chunk", text: "chunk" });
+  await fw.onSessionEvent("dm:ou_x", { type: "assistant/message", text: "hello fallback" });
+  await new Promise((r) => setTimeout(r, 200));
+  const texts = sent.filter((p) => (p as { kind: string }).kind === "text" && (p as { text: string }).text === "hello fallback");
+  assert.equal(texts.length, 1, "disposed stream card must fall back to durable outbox");
+});
