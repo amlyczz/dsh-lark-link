@@ -188,3 +188,32 @@ test("manager: idle sweep then message still gets reply (stale hook after dispos
 	);
 	await cm.disposeAll();
 });
+
+test("manager: message after stop continues in the same session", async () => {
+	const backend = createMemoryDshBackend({ autoReply: () => "reply" });
+	const events: string[] = [];
+	const cm = createConversationManager({
+		backend,
+		maxSessions: 8,
+		idleTtlMs: 60_000,
+		onEvent: (key, e) => events.push(`${key}:${e.type}`),
+	});
+
+	await cm.handleMessage(mkMsg("ou_stop_test", "p2p", "msg 1"));
+	await new Promise((r) => setTimeout(r, 50));
+	const agentBefore = backend.get("dm:ou_stop_test");
+	assert.ok(agentBefore);
+	const sessionIdBefore = agentBefore.sessionId;
+
+	await cm.stop("dm:ou_stop_test");
+
+	// Next message after stop must use the exact SAME agent and sessionId
+	await cm.handleMessage(mkMsg("ou_stop_test", "p2p", "msg 2"));
+	await new Promise((r) => setTimeout(r, 50));
+	const agentAfter = backend.get("dm:ou_stop_test");
+	assert.ok(agentAfter);
+	assert.equal(agentAfter.sessionId, sessionIdBefore, "same session ID after stop");
+	assert.equal(agentAfter.agentId, agentBefore.agentId, "same agent after stop");
+	await cm.disposeAll();
+});
+

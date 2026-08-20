@@ -84,3 +84,74 @@ test("isBotMentioned: @_user pattern detected", () => {
   assert.equal(isBotMentioned("hello @_user_1 world"), true);
   assert.equal(isBotMentioned("plain text"), false);
 });
+
+// ---- image/file messages never leak the raw JSON payload as text --------------
+// A bare image message has content {"image_key": "..."} and NO text. pickText
+// returned undefined and the conversation layer fell back to `msg.content` —
+// the model then literally received the image_key JSON as the user message
+// ("我收到的消息里只有一个图片标识符").
+
+test("normalizeInbound: image message text is a placeholder, NOT the image_key JSON", () => {
+  const msg = normalizeInbound({
+    message_id: "om_img",
+    chat_id: "ou_x",
+    chat_type: "p2p",
+    message_type: "image",
+    content: JSON.stringify({ image_key: "img_v3_0214n_abc" }),
+  });
+  assert.equal(msg?.text, "[图片]");
+  assert.notEqual(msg?.text, msg?.content, "raw JSON content must not become the prompt");
+});
+
+test("normalizeInbound: file message text is a placeholder", () => {
+  const msg = normalizeInbound({
+    message_id: "om_file",
+    chat_id: "ou_x",
+    chat_type: "p2p",
+    message_type: "file",
+    content: JSON.stringify({ file_key: "file_v3_abc", file_name: "a.pdf" }),
+  });
+  assert.equal(msg?.text, "[文件]");
+});
+
+test("normalizeInbound: post message still extracts real text", () => {
+  const msg = normalizeInbound({
+    message_id: "om_post",
+    chat_id: "ou_x",
+    chat_type: "p2p",
+    message_type: "post",
+    content: JSON.stringify({
+      content: { paragraphs: [{ elements: [{ text_run: { content: "看图" } }] }] },
+    }),
+  });
+  assert.equal(msg?.text, "看图");
+});
+
+// ---- post v1 format: content is an ARRAY OF ARRAYS of elements --------------
+// Real payload from Feishu 2026-08-19 (screenshot + caption):
+// {"title":"","content":[[{"tag":"img","image_key":"img_v3_..."}],
+//  [{"tag":"text","text":"这个图片描述下"}]],"content_v2":[[...]]}
+// pickText missed this shape → the RAW JSON became the prompt.
+
+test("normalizeInbound: post v1 (content [[img],[text]]) extracts the caption text", () => {
+  const payload = JSON.stringify({
+    title: "",
+    content: [
+      [{ tag: "img", image_key: "img_v3_0214n_7235d474", width: 986, height: 1000 }],
+      [{ tag: "text", text: "这个图片描述下", style: [] }],
+    ],
+    content_v2: [
+      [{ tag: "img", image_key: "img_v3_0214n_7235d474", width: 986, height: 1000 }],
+      [{ tag: "text", text: "这个图片描述下", style: [] }],
+    ],
+  });
+  const msg = normalizeInbound({
+    message_id: "om_post_v1",
+    chat_id: "ou_x",
+    chat_type: "p2p",
+    message_type: "post",
+    content: payload,
+  });
+  assert.equal(msg?.text, "这个图片描述下");
+  assert.notEqual(msg?.text, msg?.content, "raw JSON must never become the prompt");
+});

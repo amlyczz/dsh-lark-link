@@ -53,6 +53,18 @@ export interface AgentHandle {
 export interface DshSessionBackend {
   /** Get-or-create an agent for a conversation key (persisted mapping). */
   ensureAgent(key: string, seed?: { chatId: string; chatType: string }): Promise<AgentHandle>;
+  /**
+   * Resume a PERSISTED historical session in this conversation (/resume):
+   * detach the current agent (never dispose — its session row must survive)
+   * and load the stored log as the live agent identity. `opts.preset`
+   * carries the session's STORED agent preset (resume must recompose the
+   * same world, not the conversation's current override).
+   */
+  resumeAgent(
+    key: string,
+    sessionId: string,
+    opts?: { preset?: string },
+  ): Promise<AgentHandle>;
   /** Look up a previously created agent (no creation). */
   get(key: string): AgentHandle | undefined;
   /** Map sessionId back to conversation key (for event routing). */
@@ -69,6 +81,16 @@ export interface DshSessionBackend {
   rotate(key: string): void;
   /** Dispose one conversation's agent (mode/model/workspace switches rebuild it). */
   dispose(key: string): Promise<void>;
+  /** ONE-SHOT grace: true exactly once after an image-degrade retry was
+   * issued for `key` (agent/error "does not support image input" → text-only
+   * re-send). The turn supervisor consumes it on a silent turn/end to skip
+   * agent recovery — otherwise it would dispose the agent and kill the
+   * retry mid-flight (the retry's turn/start lands BEFORE the original
+   * turn's turn/end(error)). One-shot: a retry that itself dies gets normal
+   * recovery on the second turn/end. */
+  consumeImageRetryGrace?(key: string): boolean;
+  /** Clear any remembered image-unsupported marks (e.g. after a /model switch). */
+  clearImageUnsupported?(key?: string): void;
   /** Number of hosted agents. */
   size(): number;
   /** Dispose everything (bridge teardown). */
@@ -101,9 +123,9 @@ export function createMemoryDshBackend(
   const keyBySession = new Map<string, string>();
   let counter = 0;
 
-  const makeAgent = (key: string): AgentHandle => {
-    const agentId = `agent-${++counter}`;
-    const sessionId = `session-${counter}`;
+  const makeAgent = (key: string, sessionId?: string): AgentHandle => {
+    const sid = sessionId ?? `session-${++counter}`;
+    const agentId = sessionId ?? `agent-${counter}`;
     const listeners = new Set<(e: SessionEventOut) => void>();
     let busy = false;
     let disposed = false;
@@ -114,7 +136,7 @@ export function createMemoryDshBackend(
 
     const handle: AgentHandle = {
       agentId,
-      sessionId,
+      sessionId: sid,
       async followup(text, attachments) {
         if (disposed) throw new Error("agent disposed");
         busy = true;
@@ -144,7 +166,7 @@ export function createMemoryDshBackend(
         disposed = true;
         listeners.clear();
         agents.delete(key);
-        keyBySession.delete(sessionId);
+        keyBySession.delete(sid);
       },
     };
     return handle;
@@ -162,6 +184,19 @@ export function createMemoryDshBackend(
       return a;
     },
     get: (key) => agents.get(key),
+    async resumeAgent(key, sessionId) {
+      // Detach the current mock agent (keep this cheap — nothing to preserve)
+      // and adopt the requested session id as this conversation's identity.
+      const prev = agents.get(key);
+      if (prev) {
+        agents.delete(key);
+        keyBySession.delete(prev.sessionId);
+      }
+      const a = makeAgent(key, sessionId);
+      agents.set(key, a);
+      keyBySession.set(a.sessionId, key);
+      return a;
+    },
     keyForSessionId: (sessionId) => keyBySession.get(sessionId),
     listPresets: async () => [...SHIPPED_PRESETS],
     disposeIdle(ttlMs) {
@@ -178,6 +213,7 @@ export function createMemoryDshBackend(
     },
     size: () => agents.size,
     rotate() {},
+    clearImageUnsupported() {},
     async dispose(key) {
       const a = agents.get(key);
       if (a) await a.dispose();

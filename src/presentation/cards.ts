@@ -315,6 +315,94 @@ export function permissionCard(current?: string): unknown {
 	};
 }
 
+/**
+ * Workspace history picker card (/resume): one button per historical session
+ * of the CURRENT workspace (newest first).
+ *
+ * User-friendliness decisions:
+ * - Relative times (5 分钟前 / 3 天前) instead of raw timestamps.
+ * - Stored preset badge per row; the CURRENT session is listed too but its
+ *   button is disabled (users see where they are).
+ * - Button op carries the session id URI-ENCODED — the card-action dispatcher
+ *   splits op at the FIRST ":" and lark-link session ids are full of colons
+ *   (`lark-link:dm:oc_x:nonce:0`); an unencoded id would lose its prefix and
+ *   the click would resolve to 未找到会话.
+ */
+export function resumeCard(
+	sessions: ReadonlyArray<{
+		id: string;
+		createdAt: number;
+		preset?: string;
+	}>,
+	currentSessionId?: string,
+	opts: { now?: () => number } = {},
+): unknown {
+	const now = opts.now ?? Date.now;
+	const rel = (ts: number): string => {
+		const d = Math.max(0, now() - ts);
+		const m = Math.floor(d / 60_000);
+		if (m < 1) return "刚刚";
+		if (m < 60) return `${m} 分钟前`;
+		const h = Math.floor(m / 60);
+		if (h < 24) return `${h} 小时前`;
+		const day = Math.floor(h / 24);
+		if (day < 30) return `${day} 天前`;
+		return new Date(ts).toLocaleDateString("zh-CN");
+	};
+	const elements: unknown[] = [
+		{
+			tag: "markdown",
+			content:
+				"**恢复历史会话**（点按钮即恢复；或直接回复 `/resume <序号>`）",
+		},
+	];
+	// Sequence numbers count only RESUMABLE rows — the current session is
+	// displayed (disabled, unnumbered) so `/resume <n>` always matches the
+	// numbered buttons exactly.
+	let n = 0;
+	sessions.forEach((s) => {
+		const isCurrent = s.id === currentSessionId;
+		const label = isCurrent
+			? `当前会话（${rel(s.createdAt)}${s.preset ? ` · ${s.preset}` : ""}）`
+			: `#${++n} ${rel(s.createdAt)}${s.preset ? ` · ${s.preset}` : ""}`;
+		const btn = button(label, { op: `resume:${encodeURIComponent(s.id)}` });
+		if (isCurrent) {
+			(btn as { disabled?: boolean }).disabled = true;
+		}
+		elements.push(btn);
+	});
+	if (currentSessionId && !sessions.some((s) => s.id === currentSessionId)) {
+		// The current session was excluded from the listing (fresh chat, no
+		// history yet) — still show where the conversation IS.
+		elements.push({
+			tag: "markdown",
+			content: `- 当前会话：刚刚开始（发消息即在此会话继续）`,
+		});
+	}
+	if (sessions.length === 0) {
+		elements.push({
+			tag: "markdown",
+			content: "（该工作区暂无历史会话日志）",
+		});
+	}
+	elements.push({
+		tag: "markdown",
+		content: [
+			"———",
+			"💡 恢复后**下一条消息接续历史上下文**；此前的会话仍然保留，随时可再 `/resume` 切回。",
+			"新起会话用 `/new`；换工作区用 `/workspace <路径>`。",
+		].join("\n"),
+	});
+	return {
+		schema: "2.0",
+		header: {
+			title: { tag: "plain_text", content: "恢复历史会话" },
+			template: "blue",
+		},
+		body: { elements },
+	};
+}
+
 export function helpCard(): unknown {
 	return markdownCard(
 		[
@@ -324,11 +412,12 @@ export function helpCard(): unknown {
 			"- `/mode` 切换 Agent 模式（标准/PTC/极简/创造）",
 			"- `/permission` 切换权限（只读/工作区写/Full access）",
 			"- `/new` 当前工作区新起会话",
+			"- `/resume` 恢复当前工作区的历史会话",
 			"- `/workspace <路径>` 切换工作区（`~` 可用）",
 			"- `/stop` 停止当前会话任务",
 			"- `/doctor` 生成诊断包（含 session log）",
 			"- `/model` 查看/切换模型",
-			"- `/lark-config k=v` 热改配置",
+			"- `/lark-config k=v` 热改配置（嵌套键如 `streaming.enabled=true`）",
 			"- `/lark setup|start|stop|status` 桥接管理",
 			"- `/goal` 等 DSH 命令原样执行",
 			"- skill 无需前缀：直接说任务（如「用 X skill 做 Y」）",

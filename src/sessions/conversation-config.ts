@@ -18,6 +18,8 @@ export interface ConversationOverrides {
 	model?: string;
 	/** Agent preset id for this conversation (undefined = bridge default). */
 	preset?: string;
+	/** Active session id for this conversation (survives dsh restarts to continue conversation). */
+	activeSessionId?: string;
 }
 
 export interface ConversationConfigStore {
@@ -59,6 +61,7 @@ export function createConversationConfigStore(
 		if (o.provider) out.provider = o.provider;
 		if (o.model) out.model = o.model;
 		if (o.preset) out.preset = o.preset;
+		if (o.activeSessionId) out.activeSessionId = o.activeSessionId;
 		return out;
 	};
 

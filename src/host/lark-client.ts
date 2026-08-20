@@ -310,15 +310,49 @@ export async function buildLarkClient(
 				fileKey: string;
 				type: "image" | "file";
 			};
-			// im/v1/messages/:message_id/resources/:file_key returns a binary
-			// stream; drain it into a Buffer for the attachment pipeline.
-			const res = (await sdkClient.request({
-				url: `/open-apis/im/v1/messages/${p.messageId}/resources/${p.fileKey}`,
-				method: "GET",
-				params: { type: p.type },
-				responseType: "stream",
-			})) as { getReadableStream?: () => NodeJS.ReadableStream } | undefined;
-			const stream = res?.getReadableStream?.();
+			// im/v1/messages/:id/resources/:file_key returns a BINARY stream.
+			// Prefer the SDK's DEDICATED im.messageResource.get — its wrapper
+			// exposes getReadableStream()/writeFile(). The generic request()
+			// returns an axios-style response (stream on .data) and NEVER
+			// carries getReadableStream, which made every download fail with
+			// "no stream for <key>" and silently dropped the image.
+			const mr = (
+				sdkClient as unknown as {
+					im?: {
+						messageResource?: {
+							get?(payload: {
+								path: Record<string, string>;
+								params: Record<string, string>;
+							}): Promise<{
+								getReadableStream?(): NodeJS.ReadableStream;
+							}>;
+						};
+					};
+				}
+			).im?.messageResource;
+			let stream: NodeJS.ReadableStream | undefined;
+			if (mr?.get) {
+				const res = await mr.get({
+					path: { message_id: p.messageId, file_key: p.fileKey },
+					params: { type: p.type },
+				});
+				stream = res?.getReadableStream?.();
+			} else {
+				// Fallback: generic request with responseType stream — the
+				// axios response carries the stream on .data.
+				const res = (await sdkClient.request({
+					url: `/open-apis/im/v1/messages/${p.messageId}/resources/${p.fileKey}`,
+					method: "GET",
+					params: { type: p.type },
+					responseType: "stream",
+				})) as
+					| {
+							data?: NodeJS.ReadableStream;
+							getReadableStream?: () => NodeJS.ReadableStream;
+					  }
+					| undefined;
+				stream = res?.getReadableStream?.() ?? res?.data;
+			}
 			if (!stream)
 				throw new Error(`downloadResource: no stream for ${p.fileKey}`);
 			const chunks: Buffer[] = [];
@@ -326,6 +360,55 @@ export async function buildLarkClient(
 				chunks.push(Buffer.from(chunk));
 			}
 			return Buffer.concat(chunks);
+		},
+		// ---- CardKit v1 (streaming cards, ADR-8) ------------------------------
+		// POST /open-apis/cardkit/v1/cards creates the card ENTITY; the entity
+		// is delivered separately via im/v1/messages content
+		// {"type":"card","data":{"card_id"}} (an entity sends exactly once).
+		async cardkitCreateCard(payload) {
+			const res = (await sdkClient.request({
+				url: "/open-apis/cardkit/v1/cards",
+				method: "POST",
+				data: payload,
+			})) as { card_id?: string; data?: { card_id?: string } } | undefined;
+			return res;
+		},
+		async cardkitDeliverCard(params) {
+			const p = params as { chatId: string; cardId: string };
+			return sdkClient.im.message.create({
+				params: {
+					receive_id_type: p.chatId.startsWith("oc_") ? "chat_id" : "open_id",
+				},
+				data: {
+					receive_id: p.chatId,
+					msg_type: "interactive",
+					content: JSON.stringify({
+						type: "card",
+						data: { card_id: p.cardId },
+					}),
+				},
+			});
+		},
+		async cardkitStreamText(cardId, elementId, body) {
+			return sdkClient.request({
+				url: `/open-apis/cardkit/v1/cards/${cardId}/elements/${elementId}/content`,
+				method: "PUT",
+				data: body,
+			});
+		},
+		async cardkitPatchSettings(cardId, body) {
+			return sdkClient.request({
+				url: `/open-apis/cardkit/v1/cards/${cardId}/settings`,
+				method: "PATCH",
+				data: body,
+			});
+		},
+		async cardkitUpdateCard(cardId, body) {
+			return sdkClient.request({
+				url: `/open-apis/cardkit/v1/cards/${cardId}`,
+				method: "PUT",
+				data: body,
+			});
 		},
 	};
 

@@ -75,13 +75,28 @@ function fakeRegistry(
 	const makeAgent = (sessionId: string) => {
 		const id = sessionId;
 		const listeners = new Set<(ev: unknown) => void>();
+		const errorListeners = new Set<(payload: { error?: unknown }) => void>();
 		const agent = {
 			id,
 			status: "idle" as string,
-			followup() {},
+			session: { id: sessionId }, // the real Agent exposes its session
+			lastMessage: undefined as { content: Array<Record<string, unknown>> } | undefined,
+			followups: [] as Array<{ content: Array<Record<string, unknown>> }>,
+			async whenIdle() {},
+			followup(message: { content: Array<Record<string, unknown>> }) {
+				(agent as { lastMessage?: unknown }).lastMessage = message;
+				agent.followups.push(message);
+			},
 			cancel() {},
+			emitAgentError(err: unknown) {
+				for (const fn of errorListeners) fn({ error: err });
+			},
 			ctx: {
 				on(event: string, fn: (s: unknown, ev: unknown) => void) {
+					if (event === "agent/error") {
+						errorListeners.add(fn as (payload: { error?: unknown }) => void);
+						return () => errorListeners.delete(fn as (payload: { error?: unknown }) => void);
+					}
 					if (event !== "session/event") return () => {};
 					listeners.add((ev) => fn(undefined, ev));
 					opts.onEvent?.(agent, undefined);
@@ -94,14 +109,23 @@ function fakeRegistry(
 		};
 		return agent;
 	};
+	// The real AgentFactory awaits opts.setup(agentCtx) before the handle
+	// resolves — honor that contract so setup composition stays observable.
+	const runSetup = async (setup: unknown) => {
+		await (setup as (c: unknown) => Promise<unknown>)({
+			on: () => () => {},
+			tools: { register() {} },
+		});
+	};
 	const registry = {
 		created,
 		resumed,
 		agents,
-		async create(createOpts: { sessionId: string }) {
+		async create(createOpts: { sessionId: string; setup?: unknown }) {
 			if (agents.has(createOpts.sessionId)) {
 				throw new Error(`session "${createOpts.sessionId}" already exists`);
 			}
+			await runSetup(createOpts.setup);
 			created.push(createOpts);
 			const agent = makeAgent(createOpts.sessionId);
 			agents.set(createOpts.sessionId, agent);
@@ -111,7 +135,8 @@ function fakeRegistry(
 				dispose: async () => agents.delete(createOpts.sessionId),
 			};
 		},
-		async resume(resumeOpts: { resumeSessionId: string }) {
+		async resume(resumeOpts: { resumeSessionId: string; setup?: unknown }) {
+			await runSetup(resumeOpts.setup);
 			resumed.push(resumeOpts);
 			const agent = makeAgent(resumeOpts.resumeSessionId);
 			// resume re-mounts the persisted session; the agent id follows the
@@ -149,6 +174,7 @@ function mkBackend(
 	ctx: unknown,
 	modelSelection?: { current: { provider: string; model: string } },
 	runNonce?: string,
+	activeSessions?: Map<string, string | undefined>,
 ): DshSessionBackend {
 	return createDshAdapter({
 		ctx: ctx as Parameters<typeof createDshAdapter>[0]["ctx"],
@@ -156,6 +182,13 @@ function mkBackend(
 		logger: silentLogger,
 		modelSelection,
 		runNonce,
+		activeSessionId: activeSessions ? (key) => activeSessions.get(key) : undefined,
+		setActiveSessionId: activeSessions
+			? (key, id) => {
+					if (id === undefined) activeSessions.delete(key);
+					else activeSessions.set(key, id);
+				}
+			: undefined,
 	});
 }
 
@@ -261,61 +294,47 @@ test("adapter: assistant/message text is extracted from content blocks", async (
 	assert.equal(msg.text, "hi there");
 });
 
-test("adapter: create collision on restart mints a fresh session automatically", async () => {
+test("adapter: activeSessionId persists across dsh restart and is resumed", async () => {
 	const registry = fakeRegistry();
 	const ctx = ctxOf(registry, undefined);
-	const NONCE = "r1abc123";
-	const backend = mkBackend(ctx, undefined, NONCE);
+	const activeSessions = new Map<string, string | undefined>();
+	const backend1 = mkBackend(ctx, undefined, "r1abc123", activeSessions);
 
-	// First ensureAgent creates the session. The registry's create now throws
-	// "already exists" when the id is taken (same as the real DSH session
-	// store after a restart that reused the persisted runNonce).
-	const first = await backend.ensureAgent("dm:ou_user_1");
+	// First ensureAgent creates the session and records activeSessionId.
+	const first = await backend1.ensureAgent("dm:ou_user_1");
 	assert.equal(registry.created.length, 1);
+	assert.equal(registry.resumed.length, 0);
+	assert.equal(activeSessions.get("dm:ou_user_1"), first.sessionId);
 
-	// Force a fresh adapter over the same persisted runNonce — this mirrors
-	// the dsh restart: `tracked` is empty, DSH store still holds the session.
-	const backend2 = mkBackend(ctx, undefined, NONCE);
-	const handle = await backend2.ensureAgent("dm:ou_user_1");
+	// Simulate dsh restart: new adapter created with same persisted activeSessions.
+	const backend2 = mkBackend(ctx, undefined, "r2xyz456", activeSessions);
+	const second = await backend2.ensureAgent("dm:ou_user_1");
 
-	// The collided id was NOT reused and resume was NOT attempted (it is
-	// broken for mismatched logs) — a fresh session was minted instead, so
-	// the message is never dropped.
-	assert.equal(registry.resumed.length, 0, "resume must NOT be attempted");
-	assert.equal(registry.created.length, 2, "original + fresh restart create");
-	assert.notEqual(
-		handle.sessionId,
-		first.sessionId,
-		"fresh session after restart",
-	);
-	assert.notEqual(handle.agentId, first.agentId, "fresh agent after restart");
+	// Session is resumed, reusing the SAME session id across restart!
+	assert.equal(registry.resumed.length, 1, "session was resumed on restart");
+	assert.equal(second.sessionId, first.sessionId, "same session ID after restart");
+	assert.equal(second.agentId, first.sessionId, "same agent ID after restart");
 });
 
-test("adapter: create collision mints a fresh session directly (no resume)", async () => {
+test("adapter: create collision falls back to resume existing session", async () => {
 	const registry = fakeRegistry();
-	// Even if resume EXISTS, the adapter must NOT use it: dsh-agent-loop's
-	// resume returns success but fails on first turn (lazy id-collision
-	// check). We assert resume is never attempted.
 	const ctx = ctxOf(registry, undefined);
-	// Pre-seed the persisted session under the same runNonce the backend
-	// will mint — the very first ensureAgent must hit the collision and
-	// mint a FRESH session instead.
 	const NONCE = "r2def456";
 	const collidedId = `lark-link:dm:ou_user_1:${NONCE}:0`;
-	registry.agents.set(collidedId, {});
+	// Pre-seed the persisted session in registry
+	registry.agents.set(collidedId, {
+		id: collidedId,
+		status: "idle",
+		session: { id: collidedId },
+		ctx: { on: () => () => {}, emit: () => {} },
+	});
 	const backend = mkBackend(ctx, undefined, NONCE);
 
 	const handle = await backend.ensureAgent("dm:ou_user_1");
 
-	// Fresh create succeeded with a NEW nonce — the collided id is not
-	// reused, resume was never attempted, and the message is not dropped.
-	assert.equal(registry.resumed.length, 0, "resume must NOT be attempted");
-	assert.equal(registry.created.length, 1, "only the fresh create records");
-	assert.notEqual(
-		handle.sessionId,
-		collidedId,
-		"fresh session id, not the collided one",
-	);
+	// Collision during create automatically fell back to resume the existing session
+	assert.equal(registry.resumed.length, 1, "resume was used on collision");
+	assert.equal(handle.sessionId, collidedId, "reused existing session id");
 });
 
 test("adapter: /new (rotate) mints a wholly fresh session id (new nonce)", async () => {
@@ -439,4 +458,407 @@ test("adapter: concurrent create-collision still mints a fresh session and never
 			err.message.includes("failed to mint fresh session"),
 		"collision re-try failure must be wrapped, not raw already-exists",
 	);
+});
+
+// ---- resumeAgent (/resume) ---------------------------------------------------
+
+test("adapter: resumeAgent calls agents.resume with the stored preset and tracks the handle", async () => {
+	const registry = fakeRegistry();
+	const mounts: Array<string | undefined> = [];
+	const agentPresets = {
+		async mount(_ctx: unknown, presetId: string) {
+			mounts.push(presetId);
+		},
+	};
+	const backend = createDshAdapter({
+		ctx: ctxOf(registry, undefined, agentPresets),
+		sessionPrefix: "lark-link",
+		logger: silentLogger,
+		modelSelection: { currentFor: () => ({ provider: "p", model: "m" }) },
+	});
+
+	const handle = await backend.resumeAgent("dm:ou_r", "hist-session-1", {
+		preset: "minimal",
+	});
+
+	assert.equal(registry.resumed.length, 1);
+	const opts = registry.resumed[0] as {
+		resumeSessionId: string;
+		agentOptions?: { provider: string; model: string };
+		setup?: unknown;
+	};
+	assert.equal(opts.resumeSessionId, "hist-session-1");
+	assert.deepEqual(opts.agentOptions, { provider: "p", model: "m" });
+	assert.equal(typeof opts.setup, "function", "setup composes the resumed world");
+	assert.equal(handle.sessionId, "hist-session-1");
+	assert.equal(handle.agentId, "hist-session-1");
+
+	// setup must have mounted the STORED preset (resume must not recompose a
+	// different one — apiproxy asserts preset-unchanged on resume).
+	await new Promise((r) => setTimeout(r, 0));
+	assert.deepEqual(mounts, ["minimal"]);
+
+	// tracked: the NEXT message reuses the resumed agent — no new create.
+	const again = await backend.ensureAgent("dm:ou_r");
+	assert.equal(again.agentId, handle.agentId);
+	assert.equal(registry.created.length, 0);
+	assert.equal(
+		backend.keyForSessionId("hist-session-1"),
+		"dm:ou_r",
+		"reverse map for event routing",
+	);
+});
+
+test("adapter: resumeAgent detaches the previous agent WITHOUT disposing it", async () => {
+	const registry = fakeRegistry();
+	const ctx = ctxOf(registry, undefined);
+	const backend = mkBackend(ctx, undefined, "rRes123");
+
+	const first = await backend.ensureAgent("dm:ou_r");
+	const oldSessionId = first.sessionId;
+	// events from the OLD agent must no longer reach bridge listeners
+	const events: Array<{ type: string }> = [];
+	first.onEvent((e) => events.push(e));
+
+	const resumed = await backend.resumeAgent("dm:ou_r", "hist-2");
+
+	assert.notEqual(resumed.sessionId, oldSessionId);
+	assert.equal(
+		backend.get("dm:ou_r")?.agentId,
+		resumed.agentId,
+		"the resumed agent replaces the tracked handle",
+	);
+	// old session still in the registry — resume NEVER disposes it (its GUI
+	// row and persisted log must survive; same trade-off as /new rotate).
+	assert.ok(registry.agents.has(oldSessionId), "old session stays listed");
+	const oldAgent = registry.agents.get(oldSessionId) as {
+		ctx: { emit(event: string, ev: unknown): void };
+	};
+	oldAgent.ctx.emit("session/event", { type: "turn/start", seq: 0, time: 0, data: {} });
+	assert.equal(events.length, 0, "old agent's events no longer forwarded");
+});
+
+test("adapter: memory backend resumeAgent adopts the given session id", async () => {
+	const { createMemoryDshBackend } = await import(
+		"../../../src/sessions/dsh-session-backend.ts"
+	);
+	const mem = createMemoryDshBackend();
+	const before = await mem.ensureAgent("dm:ou_m");
+	const handle = await mem.resumeAgent("dm:ou_m", "hist-mem-1");
+	assert.equal(handle.sessionId, "hist-mem-1");
+	assert.equal(mem.keyForSessionId("hist-mem-1"), "dm:ou_m");
+	const again = await mem.ensureAgent("dm:ou_m");
+	assert.equal(again.agentId, handle.agentId);
+	assert.notEqual(before.agentId, handle.agentId);
+});
+
+// ---- per-session permission application (GH #8) ------------------------------
+
+test("adapter: ensureAgent applies the bridge permissionMode to THIS session only", async () => {
+	const registry = fakeRegistry();
+	const applied: Array<{ session: unknown; mode: string }> = [];
+	const approvalPolicies: Array<{ agent: unknown; policy: string }> = [];
+	const permissionPresets = {
+		apply(session: unknown, name: string, setApproval: (p: string) => void) {
+			applied.push({ session, mode: name });
+			setApproval("never");
+		},
+	};
+	const approval = {
+		setPolicy(agent: unknown, policy: string) {
+			approvalPolicies.push({ agent, policy });
+		},
+	};
+	const ctx = {
+		agents: registry,
+		get(name: string) {
+			if (name === "agentPresets") return undefined;
+			if (name === "permissionPresets") return permissionPresets;
+			if (name === "approval") return approval;
+			return undefined;
+		},
+	} as unknown as Parameters<typeof createDshAdapter>[0]["ctx"];
+	const backend = createDshAdapter({
+		ctx,
+		sessionPrefix: "lark-link",
+		logger: silentLogger,
+		permissionMode: () => "danger-full-access",
+	});
+	await backend.ensureAgent("dm:ou_p");
+
+	assert.equal(applied.length, 1, "permission applied once per created session");
+	assert.equal(applied[0]!.mode, "danger-full-access");
+	assert.equal(
+		approvalPolicies.length,
+		1,
+		"approval policy set through the apply callback",
+	);
+	assert.equal(approvalPolicies[0]!.policy, "never");
+});
+
+test("adapter: resumeAgent applies the bridge permissionMode to the resumed session", async () => {
+	const registry = fakeRegistry();
+	const applied: Array<{ mode: string }> = [];
+	const permissionPresets = {
+		apply(_s: unknown, name: string, _cb: (p: string) => void) {
+			applied.push({ mode: name });
+		},
+	};
+	const ctx = {
+		agents: registry,
+		get(name: string) {
+			if (name === "permissionPresets") return permissionPresets;
+			return undefined;
+		},
+	} as unknown as Parameters<typeof createDshAdapter>[0]["ctx"];
+	const backend = createDshAdapter({
+		ctx,
+		sessionPrefix: "lark-link",
+		logger: silentLogger,
+		permissionMode: () => "workspace-write",
+	});
+	await backend.resumeAgent("dm:ou_p", "hist-9");
+	assert.equal(applied.length, 1);
+	assert.equal(applied[0]!.mode, "workspace-write");
+});
+
+test("adapter: missing permission services never break agent creation (GH #8 no-op path)", async () => {
+	const registry = fakeRegistry();
+	const backend = createDshAdapter({
+		ctx: ctxOf(registry, undefined),
+		sessionPrefix: "lark-link",
+		logger: silentLogger,
+		permissionMode: () => "read-only",
+	});
+	const handle = await backend.ensureAgent("dm:ou_np");
+	assert.ok(handle.agentId, "creation unaffected when services are absent");
+});
+
+// ---- inbound images reach the model content (图片 bug 后半) --------------------
+
+test("adapter: followup pushes an ImageBlock when imageRef exists AND notes the local path", async () => {
+	const registry = fakeRegistry();
+	const backend = mkBackend(ctxOf(registry, undefined));
+	const handle = await backend.ensureAgent("dm:ou_img");
+	await handle.followup("看这张图", [
+		{
+			path: "/ws/media/feishu-m1-x.png",
+			kind: "image",
+			name: "shot.png",
+			imageRef: {
+				attachmentId: "att-1",
+				mediaType: "image/png",
+				bytes: 10,
+				width: 4,
+				height: 4,
+			},
+		},
+	]);
+	const agent = registry.agents.get(handle.sessionId) as {
+		lastMessage?: { content: Array<{ type: string; text?: string; attachment?: { attachmentId: string } }> };
+	};
+	const blocks = agent.lastMessage!.content;
+	const img = blocks.find((b) => b.type === "image");
+	assert.ok(img, "ImageBlock present for a vision model");
+	assert.equal(img!.attachment!.attachmentId, "att-1");
+	assert.match(
+		blocks[0]!.text!,
+		/\/ws\/media\/feishu-m1-x\.png/,
+		"local path folded into the text so non-vision models can read it with tools",
+	);
+});
+
+test("adapter: followup NEVER silently drops an image without imageRef", async () => {
+	const registry = fakeRegistry();
+	const backend = mkBackend(ctxOf(registry, undefined));
+	const handle = await backend.ensureAgent("dm:ou_img2");
+	await handle.followup("看这张图", [
+		{ path: "/ws/media/only-local.png", kind: "image", name: "only-local.png" },
+	]);
+	const agent = registry.agents.get(handle.sessionId) as {
+		lastMessage?: { content: Array<{ type: string; text?: string }> };
+	};
+	const blocks = agent.lastMessage!.content;
+	assert.equal(
+		blocks.find((b) => b.type === "image"),
+		undefined,
+		"no ImageBlock without a ref",
+	);
+	assert.match(
+		blocks[0]!.text!,
+		/\/ws\/media\/only-local\.png/,
+		"the model is at least TOLD the image path (previously: total silence)",
+	);
+});
+
+
+// ---- non-vision model: auto-degrade instead of a dead turn -------------------
+// Real event 2026-08-19: pi-ai model "glm-5.3" does not support image input →
+// turn ended 'error' with no output → bridge reset the session ("会话没了").
+// Expected: the adapter catches that agent/error, marks the conversation, and
+// re-sends the SAME text (path note included, no ImageBlock) so the turn still
+// gets an answer; subsequent images skip ImageBlocks from the start.
+
+test("adapter: image-unsupported model auto-degrades (retry text-only, remember per conversation)", async () => {
+	const registry = fakeRegistry();
+	const backend = mkBackend(ctxOf(registry, undefined));
+	const handle = await backend.ensureAgent("dm:ou_nv");
+	const agent = registry.agents.get(handle.sessionId) as {
+		followups: Array<{ content: Array<Record<string, unknown>> }>;
+		followup(message: { content: Array<Record<string, unknown>> }): void;
+		emitAgentError(err: unknown): void;
+	};
+	// The fake "model" rejects image blocks the moment one arrives.
+	agent.followup = (message: { content: Array<Record<string, unknown>> }) => {
+		agent.followups.push(message);
+		(agent as { lastMessage?: unknown }).lastMessage = message;
+		if (message.content.some((b) => b.type === "image")) {
+			agent.emitAgentError(
+				new Error('pi-ai model "glm-5.3" does not support image input'),
+			);
+		}
+	};
+	await handle.followup("描述下", [
+		{
+			path: "/ws/media/feishu-om1.png",
+			kind: "image",
+			name: "shot.png",
+			imageRef: {
+				attachmentId: "att-1",
+				mediaType: "image/png",
+				bytes: 10,
+				width: 4,
+				height: 4,
+			},
+		},
+	]);
+	await new Promise((r) => setTimeout(r, 10));
+	assert.equal(agent.followups.length, 2, "auto-retry fired for the same turn");
+	const retry = agent.followups[1]!.content;
+	assert.equal(
+		retry.some((b) => b.type === "image"),
+		false,
+		"retry carries no ImageBlock",
+	);
+	const retryText = String((retry[0] as { text?: string }).text ?? "");
+	assert.match(retryText, /read_image/, "retry keeps the tool hint");
+	assert.match(retryText, /\/ws\/media\/feishu-om1\.png/, "retry keeps the local path");
+	assert.match(retryText, /描述下/, "retry keeps the user caption");
+	// mark persists: next image goes text-only from the start, no error loop
+	await handle.followup("再来一张", [
+		{
+			path: "/ws/media/feishu-om2.png",
+			kind: "image",
+			name: "shot2.png",
+			imageRef: {
+				attachmentId: "att-2",
+				mediaType: "image/png",
+				bytes: 10,
+				width: 4,
+				height: 4,
+			},
+		},
+	]);
+	await new Promise((r) => setTimeout(r, 10));
+	assert.equal(agent.followups.length, 3, "no extra retry when no ImageBlock was sent");
+	assert.equal(
+		agent.followups[2]!.content.some((b) => b.type === "image"),
+		false,
+		"marked conversation skips ImageBlocks",
+	);
+	assert.match(
+		String((agent.followups[2]!.content[0] as { text?: string }).text ?? ""),
+		/feishu-om2\.png/,
+		"second image path still noted",
+	);
+});
+
+test("adapter: DeepSeek and qwen3.8-27b error messages trigger image degradation", async () => {
+	const registry = fakeRegistry();
+	const backend = mkBackend(ctxOf(registry, undefined));
+	const handle = await backend.ensureAgent("dm:ou_ds");
+	const agent = registry.agents.get(handle.sessionId) as {
+		followups: Array<{ content: Array<Record<string, unknown>> }>;
+		followup(message: { content: Array<Record<string, unknown>> }): void;
+		emitAgentError(err: unknown): void;
+	};
+	// DeepSeek official error message: "The DeepSeek chat-completions adapter does not support image content."
+	agent.followup = (message: { content: Array<Record<string, unknown>> }) => {
+		agent.followups.push(message);
+		(agent as { lastMessage?: unknown }).lastMessage = message;
+		if (message.content.some((b) => b.type === "image")) {
+			agent.emitAgentError(
+				new Error("The DeepSeek chat-completions adapter does not support image content."),
+			);
+		}
+	};
+	await handle.followup("分析图片", [
+		{
+			path: "/tmp/media/ds.jpg",
+			kind: "image",
+			name: "ds.jpg",
+			imageRef: { attachmentId: "ds1", mediaType: "image/jpeg", bytes: 10, width: 10, height: 10 },
+		},
+	]);
+	await new Promise((r) => setTimeout(r, 10));
+	assert.equal(agent.followups.length, 2, "DeepSeek image rejection triggered text-only retry");
+	assert.equal(agent.followups[1]!.content.some((b) => b.type === "image"), false);
+
+	// clearImageUnsupported resets the mark
+	backend.clearImageUnsupported?.("dm:ou_ds");
+	await handle.followup("重新发图", [
+		{
+			path: "/tmp/media/ds2.jpg",
+			kind: "image",
+			name: "ds2.jpg",
+			imageRef: { attachmentId: "ds2", mediaType: "image/jpeg", bytes: 10, width: 10, height: 10 },
+		},
+	]);
+	await new Promise((r) => setTimeout(r, 10));
+	// Since imageUnsupported was cleared, the 3rd followup attached an image block (which triggered another retry -> 4th)
+	assert.equal(agent.followups[2]!.content.some((b) => b.type === "image"), true, "cleared mark re-enables image blocks");
+});
+
+// ---- image-retry grace vs turn-supervisor recovery (race fix) ----------------
+// Real ordering (log 2026-08-19): agent/error fires, the adapter SYNCHRONOUSLY
+// re-sends the text-only twin, its turn/start lands, and only THEN the original
+// turn/end(error) arrives — the supervisor would see "silent turn" and dispose
+// the agent, killing the retry mid-flight. Grace: a ONE-SHOT marker consumed
+// by the supervisor's silent branch; the retry turn gets to run. If the retry
+// itself dies, the SECOND turn/end finds no marker and recovery proceeds.
+
+test("adapter: image-retry grace is one-shot and only set when a retry fires", async () => {
+	const registry = fakeRegistry();
+	const backend = mkBackend(ctxOf(registry, undefined));
+	const key = "dm:ou_grace";
+	// before anything: no grace
+	assert.equal(backend.consumeImageRetryGrace?.(key), false);
+
+	const handle = await backend.ensureAgent(key);
+	const agent = registry.agents.get(handle.sessionId) as {
+		followups: Array<{ content: Array<Record<string, unknown>> }>;
+		followup(message: { content: Array<Record<string, unknown>> }): void;
+		emitAgentError(err: unknown): void;
+	};
+	// text-only turn: an error must NOT arm grace (no retry happens)
+	await handle.followup("纯文字", []);
+	agent.emitAgentError(new Error("some unrelated model error"));
+	assert.equal(backend.consumeImageRetryGrace?.(key), false);
+
+	// image turn that gets rejected → retry fires → grace armed exactly once
+	await handle.followup("看图", [
+		{
+			path: "/tmp/media/g1.png",
+			kind: "image",
+			name: "g1.png",
+			imageRef: { attachmentId: "a1", mediaType: "image/png", bytes: 1, width: 1, height: 1 },
+		},
+	]);
+	agent.emitAgentError(
+		new Error('pi-ai model "glm-5.3" does not support image input'),
+	);
+	await new Promise((r) => setTimeout(r, 10));
+	assert.equal(agent.followups.length, 3, "1 text + 1 image + 1 text-only retry");
+	assert.equal(backend.consumeImageRetryGrace?.(key), true, "first consume wins");
+	assert.equal(backend.consumeImageRetryGrace?.(key), false, "one-shot: second consume is false");
 });

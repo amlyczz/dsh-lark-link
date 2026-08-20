@@ -15,9 +15,14 @@ import { createDshAdapter } from "./sessions/dsh-adapter.ts";
 import { createMemoryDshBackend } from "./sessions/dsh-session-backend.ts";
 import { createConversationManager } from "./sessions/conversation-manager.ts";
 import { createConversationConfigStore } from "./sessions/conversation-config.ts";
+import { listWorkspaceSessions } from "./sessions/workspace-sessions.ts";
 import { createTurnSupervisor } from "./sessions/turn-supervisor.ts";
 import { createOutbox, type OutboxSender } from "./outbound/outbox.ts";
 import { createEventForwarder } from "./outbound/event-forwarder.ts";
+import {
+	createCardKitStream,
+	type CardKitStreamHandle,
+} from "./outbound/cardkit-stream.ts";
 import { createRouteStore } from "./outbound/outbound-router.ts";
 import {
 	createTransport,
@@ -32,6 +37,7 @@ import {
 	type FeishuSender,
 } from "./application/bridge-context.ts";
 import { createMessageHandler } from "./application/message-handler.ts";
+import { startMediaSweeper } from "./application/media-retention.ts";
 import {
 	createCommandRouter,
 	type DshCommandRegistry,
@@ -42,7 +48,7 @@ import {
 	statusDetailLines,
 } from "./application/status-formatter.ts";
 import { createStatusStore } from "./common/connection-status.ts";
-import { createConfigStore, HOT_RELOADABLE } from "./common/config.ts";
+import { createConfigStore, HOT_RELOADABLE, buildHotReloadPatch } from "./common/config.ts";
 import { createLogger, type Logger } from "./common/logger.ts";
 import { createDedupeStore } from "./common/dedupe-store.ts";
 import { createInboundWal } from "./inbound/inbound-wal.ts";
@@ -55,6 +61,7 @@ import {
 	modelCard,
 	permissionCard,
 	questionCard,
+	resumeCard,
 	withButtons,
 	button,
 	AGENT_PRESETS,
@@ -71,8 +78,9 @@ import {
 } from "./host/lark-client.ts";
 import * as qrcode from "qrcode-terminal";
 import QRCode from "qrcode";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { resolveWorkspaceTarget, resolveInWorkspacePath, isAbsoluteAny } from "./common/paths.ts";
 import {
 	mkdirSync,
 	readFileSync,
@@ -138,57 +146,17 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		join(dir, "conversation-overrides.json"),
 	);
 
-	// ---- permission default sync ---------------------------------------------
-	// The bridge config `permissionMode` ("read-only | workspace-write |
-	// danger-full-access") is documented as the DEFAULT for new sessions, but it
-	// is only ever applied to the CURRENT session via /permission. A brand-new
-	// session is pinned by DSH's permissionPresets service to ITS default
-	// (permission:defaultPreset — the composed default is workspace-write), so
-	// new sessions silently ignored the configured mode. Sync the DSH default to
-	// the bridge config so every subsequent new session inherits it. This is a
-	// best-effort, idempotent, non-fatal write into the DSH settings document.
-	let syncTried = 0;
-	function syncDefaultPermission(): void {
-		const settings = (
-			ctx as unknown as {
-				get?(
-					name: string,
-				):
-					| {
-							update?(
-								ns: string,
-								patch: { defaultPreset: string },
-							): Promise<unknown>;
-					  }
-					| undefined;
-			}
-		).get?.("settings");
-		if (!settings?.update) {
-			// Settings provider absent yet (or not mounted, e.g. bare host). The
-			// bridge still functions, just without an inherited default; retry a
-			// little so a slow service init still gets synced.
-			syncTried++;
-			if (syncTried <= 4) setTimeout(syncDefaultPermission, 500 * syncTried);
-			return;
-		}
-		const mode = getCfg().permissionMode;
-		settings
-			.update("permission", { defaultPreset: mode })
-			.then(() => logger.info(`permission default set to ${mode}`))
-			.catch((err: unknown) => {
-				// The permission namespace may not be registered yet (load order).
-				// Retry a couple of times shortly after; otherwise surface and move
-				// on — never fatal for the bridge.
-				syncTried++;
-				logger.warn(
-					`sync permission default to ${mode} failed: ${err instanceof Error ? err.message : String(err)}`,
-				);
-				if (syncTried < 4) {
-					setTimeout(syncDefaultPermission, 500 * syncTried);
-				}
-			});
-	}
-	syncDefaultPermission();
+	// ---- permission scoping (GH #8) --------------------------------------------
+	// The bridge's `permissionMode` is applied PER SESSION at agent creation
+	// and resume (see dsh-adapter) plus on /permission switches for the live
+	// session. The bridge NEVER writes the host's global permission default
+	// (`settings.permission.defaultPreset`): the old boot-time sync silently
+	// flipped the whole deployment — including non-Feishu sessions a
+	// deployment wanted conservative — to the bridge's default
+	// (danger-full-access). The old boot-time syncDefaultPermission() is gone
+	// entirely; bridge sessions get their mode per-session at creation/resume
+	// via the dsh-adapter's permissionMode dep, and /permission switches apply
+	// to the live session plus future bridge sessions through this config.
 
 	// ---- backend: real DSH adapter, falling back to the in-memory mock ------
 	// LIVE model selection: liveModelSelection is the bridge-wide DEFAULT
@@ -279,7 +247,14 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					return m.provider && m.model ? m : undefined;
 				},
 			},
+			activeSessionId: (key: string) => convCfg.get(key).activeSessionId,
+			setActiveSessionId: (key: string, sessionId: string | undefined) => {
+				convCfg.set(key, { activeSessionId: sessionId });
+			},
 			askUserQuestion,
+			// GH #8: bridge sessions carry the bridge's permission preset at
+			// creation/resume — the host-wide default is never modified.
+			permissionMode: () => getCfg().permissionMode,
 		});
 	} catch (err) {
 		logger.warn(
@@ -481,30 +456,35 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		router: routeStore,
 		sender,
 		// DSH attachment store — saves inbound Feishu images as ImageBlocks.
-		attachments: (
-			ctx as unknown as {
-				get?(name: string):
-					| {
-							saveImage(input: {
-								data: Uint8Array;
-								mediaType:
-									| "image/png"
-									| "image/jpeg"
-									| "image/webp"
-									| "image/gif";
-								name?: string;
-							}): Promise<{
-								attachmentId: string;
-								mediaType: string;
-								bytes: number;
-								width: number;
-								height: number;
-								name?: string;
-							}>;
-					  }
-					| undefined;
-			}
-		).get?.("attachments"),
+		// LIVE getter (NOT a snapshot): the service may mount after the
+		// plugin loads (Cordis load order) — a construction-time read stayed
+		// undefined forever and every inbound image silently lost its
+		// imageRef, so the model never saw the image at all.
+		attachmentsRef: () =>
+			(
+				ctx as unknown as {
+					get?(name: string):
+						| {
+								saveImage(input: {
+									data: Uint8Array;
+									mediaType:
+										| "image/png"
+										| "image/jpeg"
+										| "image/webp"
+										| "image/gif";
+									name?: string;
+								}): Promise<{
+									attachmentId: string;
+									mediaType: string;
+									bytes: number;
+									width: number;
+									height: number;
+									name?: string;
+								}>;
+						  }
+						| undefined;
+				}
+			).get?.("attachments"),
 	});
 
 	// ---- outbox ---------------------------------------------------------------
@@ -546,11 +526,37 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	});
 
 	// ---- forwarder / compensation / trigger / diagnostics --------------------
+	// CardKit streaming handles, one per conversation key. The forwarder calls
+	// ensureStream() on every chunk, so the SAME handle must be returned for
+	// the whole turn (a fresh one per chunk would create a card per chunk);
+	// a disposed handle (finalized / errored) is replaced on next access.
+	const streamHandles = new Map<string, CardKitStreamHandle>();
+	// One-time per conversation: tell the user WHY streaming fell back to a
+	// plain reply (silent fallback reads as "卡片功能无法开启"). Content is
+	// never lost — the forwarder degrades to the durable outbox — this notice
+	// just makes the degradation diagnosable (missing CardKit scope, old
+	// client, entity-already-sent, …).
+	const cardkitNotified = new Set<string>();
+	const notifyCardkitFailure = (sessionKey: string, err: unknown): void => {
+		if (cardkitNotified.has(sessionKey)) return;
+		cardkitNotified.add(sessionKey);
+		const chatId = routeStore.get(sessionKey)?.chatId;
+		if (!chatId) return;
+		const msg = err instanceof Error ? err.message : String(err);
+		void sender
+			.sendText(
+				chatId,
+				`⚠️ 流式卡片创建失败，本轮已回退普通消息（原因: ${msg.slice(0, 200)}）。` +
+					"常见排查：应用未开通 CardKit 卡片权限（cardkit:card）、飞书客户端版本过旧、或 stream 文本超限。错误只提示一次。",
+			)
+			.catch(() => undefined);
+	};
 	const forwarder = createEventForwarder({
 		outbox,
 		routeFor: (key) => routeStore.get(key),
-		// Streaming cards stay off (省流量) unless hot-reloaded; the StreamTarget
-		// exists so turn/end can mark the trigger message DONE (pi design:
+		// Streaming cards stay off (省流量) unless hot-reloaded via
+		// /lark-config streaming.enabled=true; the StreamTarget exists so
+		// turn/end can always mark the trigger message DONE (pi design:
 		// 随机表情回执 + 完成打 DONE). markDone is best-effort via the sender.
 		streamFor: (sessionKey) => {
 			const route = routeStore.get(sessionKey);
@@ -562,7 +568,45 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					chatType: route.chatType,
 					threadMessageId: route.threadMessageId,
 				},
-				ensureStream: () => undefined,
+				ensureStream: () => {
+					const client = getLarkClient();
+					if (!client?.cardkitCreateCard || !client.cardkitDeliverCard)
+						return undefined; // CardKit unavailable → chunks stay preview-only
+					const existing = streamHandles.get(sessionKey);
+					if (existing && !existing.disposed) return existing;
+					const cfgStream = getCfg().streaming;
+					const handle = createCardKitStream({
+						api: {
+							createCard: async (payload) => {
+								try {
+									return await client.cardkitCreateCard!(payload);
+								} catch (err) {
+									notifyCardkitFailure(sessionKey, err);
+									throw err;
+								}
+							},
+							deliverCard: (cardId) =>
+								client.cardkitDeliverCard!({
+									chatId: route.chatId,
+									cardId,
+								}),
+							streamText: (cardId, elementId, body) =>
+								client.cardkitStreamText!(cardId, elementId, body),
+							patchSettings: (cardId, body) =>
+								client.cardkitPatchSettings!(cardId, body),
+							updateCard: (cardId, body) =>
+								client.cardkitUpdateCard!(cardId, body),
+						},
+						printFrequencyMs: cfgStream.printFrequencyMs,
+						printStep: cfgStream.printStep,
+						onError: (err) =>
+							logger.warn(
+								`cardkit stream error for ${sessionKey}: ${err instanceof Error ? err.message : String(err)}`,
+							),
+					});
+					streamHandles.set(sessionKey, handle);
+					return handle;
+				},
 				fallbackText: async (text) => {
 					await outbox.enqueue({
 						dedupeKey: `${sessionKey}:fallback:${Date.now()}`,
@@ -803,35 +847,33 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				}
 				const eq = arg.indexOf("=");
 				if (eq === -1) {
-					await durableReply(name, 
+					await durableReply(name,
 						msg,
 						"用法：/lark-config key=value（可热改: " +
 							HOT_RELOADABLE.join(", ") +
-							"）",
+							"；嵌套键用点路径，如 streaming.enabled=true）",
 					);
 					return true;
 				}
 				const key = arg.slice(0, eq).trim();
 				const rawVal = arg.slice(eq + 1).trim();
-				if (!HOT_RELOADABLE.includes(key as never)) {
-					await durableReply(name, 
-						msg,
-						`"${key}" 不可热改（可改: ${HOT_RELOADABLE.join(", ")}）`,
-					);
-					return true;
-				}
 				// Type-coerce: booleans and numbers stay typed for config.
 				let val: unknown = rawVal;
 				if (rawVal === "true" || rawVal === "false") val = rawVal === "true";
 				else if (rawVal !== "" && !Number.isNaN(Number(rawVal)))
 					val = Number(rawVal);
+				// Dotted paths (streaming.enabled) resolve into a NESTED patch —
+				// previously only exact top-level whitelist names matched, so
+				// `/lark-config streaming.enabled=true` answered 不可热改.
 				try {
-					configStore.update({ [key]: val } as never);
+					configStore.update(buildHotReloadPatch(key, val));
 					configStore.saveOverrides();
 				} catch (err) {
-					await durableReply(name, 
+					await durableReply(name,
 						msg,
-						`更新失败: ${err instanceof Error ? err.message : String(err)}`,
+						err instanceof Error && /not hot-reloadable/.test(err.message)
+							? `"${key}" 不可热改（可改: ${HOT_RELOADABLE.join(", ")}）`
+							: `更新失败: ${err instanceof Error ? err.message : String(err)}`,
 					);
 					return true;
 				}
@@ -930,14 +972,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// and dispose hosted sessions so the next message rebuilds agents
 				// under the new cwd (DSH session cwd is fixed at creation).
 				// Expand ~ and relative paths against the current workspace.
-				const expanded =
-					arg === "~" || arg.startsWith("~/")
-						? join(homedir(), arg.slice(arg.startsWith("~/") ? 2 : 1))
-						: arg;
-				const target = resolve(
-					expanded.startsWith("/") ? expanded : join(curWs, expanded),
-				);
-				if (!target.startsWith("/")) {
+				// GH #7: absoluteness via node:path isAbsolute (drive letters
+				// AND UNC included) — startsWith("/") rejected every Windows path.
+				const target = resolveWorkspaceTarget(arg, curWs);
+				if (!isAbsoluteAny(target)) {
 					await durableReply(name, msg, `无效路径: ${arg}`);
 					return true;
 				}
@@ -953,7 +991,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// Scope the switch to THIS conversation only (per-key override).
 				// The bridge default is untouched, so other chats keep their
 				// workspace even when their agent is later rebuilt.
-				convCfg.set(wsKey, { workspaceRoot: target });
+				convCfg.set(wsKey, { workspaceRoot: target, activeSessionId: undefined });
 				// Only the current conversation rebuilds (next message) — other
 				// conversations keep their agents/sessions. rotate() (NOT dispose):
 				// dispose() tears down the agent AND removes its session from the
@@ -968,6 +1006,122 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				);
 				return true;
 			}
+			case "resume": {
+				// /resume — resume a HISTORICAL session of THIS conversation's
+				// workspace: no arg renders the picker (service-sourced headers
+				// preferred, filesystem scan fallback); an arg picks by list
+				// index or session-id prefix. The current agent is detached
+				// rotate-style (never disposed — its GUI row survives) and the
+				// stored log is loaded via agents.resume, so the NEXT message
+				// continues that conversation's context.
+				const key = bridge.conversationKeyFor(msg);
+				const wsRoot =
+					convCfg.get(key).workspaceRoot ??
+					(getCfg().workspaceRoot || process.cwd());
+				const currentSessionId =
+					bridge.backend?.get(key)?.sessionId ??
+					convCfg.get(key).activeSessionId;
+				const persistence = (
+					ctx as unknown as { get?(name: string): unknown }
+				).get?.("sessionPersistence") as
+					| {
+							list?(): Promise<
+								Array<{
+									id: string;
+									createdAt: number;
+									cwd?: string;
+									agentPreset?: string;
+									origin?: string;
+								}>
+							>;
+					  }
+					| undefined;
+				let sessions: Array<{
+					id: string;
+					createdAt: number;
+					preset?: string;
+					source: string;
+				}> = [];
+				// The current session stays LISTED (rendered as a disabled
+				// "当前会话" row) but is never a resume target.
+				const currentSessionId2 = currentSessionId ?? "";
+				try {
+					sessions = await listWorkspaceSessions({
+						sessionsRoot: join(
+							process.env.DSH_HOME ?? join(homedir(), ".dsh"),
+							"sessions",
+						),
+						cwd: wsRoot,
+						persistence: persistence?.list
+							? {
+									list: async () => await persistence.list!(),
+								}
+							: undefined,
+					});
+				} catch (err) {
+					logger.warn(
+						`resume: listing workspace sessions failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+				const arg = _rawInput.trim();
+				if (!arg) {
+					await sender.sendCard(
+						msg.chatId,
+						resumeCard(sessions, currentSessionId),
+					);
+					return true;
+				}
+				// Card buttons pass the id URI-ENCODED (lark-link ids contain
+				// colons which the card-action op splitter would otherwise
+				// cut at the first one); a typed /resume <id> may be raw, a
+				// prefix, or a 1-based index matching the card numbering.
+				let sel = arg;
+				try {
+					if (arg.includes("%")) sel = decodeURIComponent(arg);
+				} catch {
+					// malformed encoding — use the raw arg
+				}
+				// Numbering matches the card: only RESUMABLE rows carry #n
+				// (the current session is displayed disabled and unnumbered).
+				const resumable = sessions.filter(
+					(s) => s.id !== currentSessionId2,
+				);
+				const pick = /^\d+$/.test(sel)
+					? resumable[Number(sel) - 1]
+					: resumable.find(
+							(s) =>
+								s.id === sel ||
+								s.id.startsWith(sel) ||
+								s.id.endsWith(`:${sel}`),
+						);
+				if (!pick) {
+					await durableReply(
+						name,
+						msg,
+						`未找到会话 «${arg}»（发送 /resume 查看当前工作区的历史会话）`,
+					);
+					return true;
+				}
+				try {
+					await bridge.backend?.resumeAgent(
+						key,
+						pick.id,
+						pick.preset ? { preset: pick.preset } : undefined,
+					);
+					await durableReply(
+						name,
+						msg,
+						`已恢复会话（${new Date(pick.createdAt).toLocaleString("zh-CN", { hour12: false })} 开始的对话）\n下一条消息接续历史上下文；此前的会话保留，可随时 /resume 切回。`,
+					);
+				} catch (err) {
+					await durableReply(
+						name,
+						msg,
+						`恢复失败: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+				return true;
+			}
 			case "stop": {
 				const key = bridge.conversationKeyFor(msg);
 				await bridge.conversations?.stop(key);
@@ -979,6 +1133,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// bump the session generation and dispose the agent so the next
 				// message opens a NEW session row (never forwarded to the model).
 				const key = bridge.conversationKeyFor(msg);
+				convCfg.set(key, { activeSessionId: undefined });
 				await conversations?.rotate(key);
 				const newWs =
 					convCfg.get(key).workspaceRoot ??
@@ -1064,6 +1219,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				entry.provider = provider;
 				entry.model = model;
 				entry.override = true;
+				backend?.clearImageUnsupported?.(modelKey);
 				await durableReply(name, 
 					msg,
 					`模型已切换: ${provider}/${model}\n本会话下次回复生效（会话不中断，其他会话不受影响）。`,
@@ -1099,7 +1255,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					return true;
 				}
 				// Per-conversation preset override — other chats keep theirs.
-				convCfg.set(bridge.conversationKeyFor(msg), { preset: arg });
+				convCfg.set(bridge.conversationKeyFor(msg), {
+					preset: arg,
+					activeSessionId: undefined,
+				});
 				// Agent presets snapshot at agent creation — an existing session's
 				// agent CANNOT change mode mid-flight. rotate() (NOT dispose): mints
 				// a fresh runNonce so the next message opens a brand-new session in
@@ -1180,10 +1339,11 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				}
 				configStore.update({ permissionMode: arg });
 				configStore.saveOverrides();
-				// Keep the DSH default in lockstep so NEW sessions inherit the
-				// switch too, not just this one.
-				syncDefaultPermission();
-				await durableReply(name, msg, `权限已切换为 ${arg}`);
+				// GH #8: no host-global default write. The bridge's own
+				// permissionMode governs FUTURE bridge sessions too (the
+				// dsh-adapter applies it per-session at creation/resume); the
+				// deployment-wide default stays whatever the host configured.
+				await durableReply(name, msg, `权限已切换为 ${arg}（仅桥接会话生效）`);
 				return true;
 			}
 			case "lark": {
@@ -1317,10 +1477,15 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		dedupe,
 		allowlist: () => getCfg().allowlist,
 		wal: inboundWal,
-		// Persist inbound Feishu images/files as real local files under the
-		// bridge state dir, so a non-vision model / external tooling can read
-		// them off disk (the DSH attachment store alone is in-memory).
-		inboundDir: join(dir, "inbound"),
+		// Persist inbound Feishu images/files as real local files so a
+		// non-vision model / external tooling can read them off disk (the
+		// DSH attachment store alone is in-memory). Root: OS TEMP DIR by
+		// default — they are transient turn artifacts, not durable state;
+		// the sweeper below bounds growth by age. attachments.dir overrides
+		// (startup-time setting; takes effect after a reload).
+		inboundDir:
+			getCfg().attachments.dir.trim() ||
+			join(tmpdir(), "dsh-lark-link", "inbound"),
 	});
 
 	// ---- conversations / turn supervisor --------------------------------------
@@ -1369,37 +1534,34 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			if (event.type === "turn/end") {
 				turnSupervisor.disarm(key);
 				const reason = event.reason;
+				// "aborted" is user cancellation via /stop or supervisor cancel — NOT an unhandled failure.
+				// Do not emit error diagnostic or reset session on "aborted".
 				const silent =
 					!turnDelivered.has(key) &&
-					(reason === "aborted" ||
-						reason === "rejected" ||
+					(reason === "rejected" ||
 						reason === "failed" ||
 						reason === "error");
 				turnDelivered.delete(key);
-				if (silent) {
+				if (silent && backend.consumeImageRetryGrace?.(key)) {
+					// An image-degrade retry (non-vision model) is in flight:
+					// its turn/start already landed, so this silent turn/end
+					// belongs to the ORIGINAL image turn. Let the retry answer.
 					logger.warn(
-						`turn ended '${reason}' with no output for ${key}; recovering agent`,
+						`turn ended '${reason}' for ${key} but an image-degrade retry is in flight; skipping error notice`,
 					);
-					// Detach the fan-out listener so a late event from the dying
-					// agent can't re-enter: dispose() drops the hook + tracking.
-					void conversations
-						.dispose(key)
-						.then(() => {
-							// Tell the user instead of a mute dead-end. Best effort;
-							// the chat id comes from the route table (may be absent).
-							const chatId = routeStore.get(key)?.chatId;
-							if (chatId) {
-								return sender
-									.sendText(
-										chatId,
-										`⚠️ 本轮没有产出回复（turn ended: ${reason}，无输出）。已重置会话，请再发一条消息重试。若仍无回复，请检查 /model 是否指向可用的模型。`,
-									)
-									.catch(() => undefined);
-							}
-						})
-						.catch((e) =>
-							logger.warn(`recover agent for ${key} failed: ${String(e)}`),
-						);
+				} else if (silent) {
+					logger.warn(
+						`turn ended '${reason}' with no output for ${key}`,
+					);
+					const chatId = routeStore.get(key)?.chatId;
+					if (chatId) {
+						void sender
+							.sendText(
+								chatId,
+								`⚠️ 本轮没有产出回复（turn ended: ${reason}）。请再发一条消息重试。若仍无回复，请检查 /model 是否指向可用的模型。`,
+							)
+							.catch(() => undefined);
+					}
 				}
 			}
 		},
@@ -1667,12 +1829,14 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				const workspaceRoot =
 					convCfg.get(convKeyForWs).workspaceRoot ??
 					(getCfg().workspaceRoot || process.cwd());
-				const abs = resolve(
-					args.path.startsWith("/")
-						? args.path
-						: join(workspaceRoot, args.path),
+				// GH #7: drive-letter paths are absolute too, and containment
+				// must use relative() — startsWith("/") joined a Windows
+				// absolute path under the root and then always rejected it.
+				const { abs, ok: inWorkspace } = resolveInWorkspacePath(
+					args.path,
+					workspaceRoot,
 				);
-				if (!abs.startsWith(workspaceRoot)) return "拒绝: 路径不在工作区内";
+				if (!inWorkspace) return "拒绝: 路径不在工作区内";
 				const prefix = "lark-link:";
 				const backendKey = bridge.backend?.keyForSessionId?.(sessionId);
 				const key =
@@ -2164,6 +2328,17 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	// ---- lifecycle registration (Cordis disposer — clean unload) ----------------
 	ctx.effect(() => {
 		void startBridge();
+		// Inbound media retention: sweep expired temp files (startup + hourly;
+		// retentionHours is read LIVE so /lark-config hot-reload applies).
+		const stopMediaSweeper = startMediaSweeper({
+			mediaDir: join(
+				getCfg().attachments.dir.trim() ||
+					join(tmpdir(), "dsh-lark-link", "inbound"),
+				"media",
+			),
+			retentionHours: () => getCfg().attachments.retentionHours,
+			logger,
+		});
 		const sweep = setInterval(() => {
 			const n = conversations.sweep();
 			if (n > 0)
@@ -2176,6 +2351,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		sweep.unref?.();
 		return async () => {
 			clearInterval(sweep);
+			stopMediaSweeper();
 			await stopBridge();
 		};
 	});

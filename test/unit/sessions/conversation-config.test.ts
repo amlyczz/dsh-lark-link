@@ -51,3 +51,18 @@ test("conversation-config: empty-string fields are dropped (fallback to default)
   assert.deepEqual(store.keys(), []);
   rmSync(join(f, ".."), { recursive: true, force: true });
 });
+
+test("conversation-config: activeSessionId persists and can be cleared", () => {
+  const f = tmpFile();
+  const s1 = createConversationConfigStore(f);
+  s1.set("dm:ou_s", { activeSessionId: "lark-link:dm:ou_s:nonce:0" });
+  assert.equal(s1.get("dm:ou_s").activeSessionId, "lark-link:dm:ou_s:nonce:0");
+
+  const s2 = createConversationConfigStore(f);
+  assert.equal(s2.get("dm:ou_s").activeSessionId, "lark-link:dm:ou_s:nonce:0");
+
+  s2.set("dm:ou_s", { activeSessionId: undefined });
+  assert.equal(s2.get("dm:ou_s").activeSessionId, undefined);
+  rmSync(join(f, ".."), { recursive: true, force: true });
+});
+

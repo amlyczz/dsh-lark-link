@@ -52,6 +52,9 @@ const BRIDGE_COMMANDS = new Set([
 	"mode",
 	"permission",
 	"new",
+	// Feishu-side history picker — Tier 1 wins over DSH's own /resume so the
+	// workspace-session card renders instead of a bare text reply.
+	"resume",
 ]);
 
 export function createCommandRouter(deps: CommandRouterDeps): CommandRouter {

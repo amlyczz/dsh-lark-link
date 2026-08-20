@@ -43,6 +43,24 @@ export interface MessageHandler {
 	handleCompensated(msg: FeishuInboundMessage): Promise<void>;
 }
 
+/**
+ * Make a user-provided filename safe on EVERY platform we may run on
+ * (Linux/macOS/Windows — the bridge is cross-platform by design):
+ * - Windows forbids <>:"/\\|?* and trailing dots/spaces;
+ * - control characters confuse shells and terminals everywhere;
+ * - macOS screenshot names contain ":" (invalid on Windows) — a file written
+ *   with such a name on one OS becomes unreadable/unmovable when the state
+ *   dir lives on a share synced to another.
+ * CJK/unicode content itself is kept; only separators/reserved chars go.
+ */
+export function sanitizeAttachmentName(name: string): string {
+	const cleaned = name
+		.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")
+		.replace(/[. ]$/, "_"); // Windows: no trailing dot/space
+	const trimmed = cleaned.slice(0, 200);
+	return trimmed.length > 0 ? trimmed : "feishu-attachment";
+}
+
 /** Sniff image media type from magic bytes (feishu im resources are raw). */
 function sniffImageType(
 	buf: Uint8Array,
@@ -77,9 +95,11 @@ function imgExt(m: "image/png" | "image/jpeg" | "image/webp" | "image/gif"): str
 /**
  * Resolve inbound Feishu attachments (M6): image → download → attachment
  * store (ImageBlock for the visual model); file → download → bounded text
- * extraction. Failures degrade to text-only (never drop the message).
+ * extraction. Post (rich text) messages carry images INLINE as
+ * `{tag:"img", image_key}` elements — every one is extracted and resolved.
+ * Failures degrade to text-only (never drop the message).
  */
-async function resolveInboundAttachments(
+export async function resolveInboundAttachments(
 	msg: FeishuInboundMessage,
 	ctx: BridgeContextRead,
 	inboundDir?: string,
@@ -87,53 +107,64 @@ async function resolveInboundAttachments(
 	const out: AttachmentInput[] = [];
 	if (!msg.messageId) return out;
 	try {
+		// Post (rich text): collect every embedded image_key first, then run
+		// the shared per-image resolution. A text+images composition on the
+		// Feishu client arrives as ONE post message — dropping the img
+		// elements meant the model answered "I don't see any image".
+		if (msg.msgType === "post") {
+			const parsed = JSON.parse(msg.content ?? "{}") as Record<
+				string,
+				unknown
+			>;
+			const keys: string[] = [];
+			const pushImgKeys = (elements: unknown): void => {
+				if (!Array.isArray(elements)) return;
+				for (const e of elements) {
+					const el = e as { tag?: string; image_key?: string };
+					if (el?.tag === "img" && typeof el.image_key === "string")
+						keys.push(el.image_key);
+				}
+			};
+			const content = parsed.content;
+			const paragraphs = (
+				content as { paragraphs?: unknown[] } | undefined
+			)?.paragraphs;
+			if (Array.isArray(paragraphs)) {
+				// post v2: content = { paragraphs: [{ elements: [...] }] }
+				for (const p of paragraphs as { elements?: unknown }[])
+					pushImgKeys(p?.elements);
+			} else if (Array.isArray(content)) {
+				// post v1 (default for events, observed 2026-08-19):
+				// content = [[{tag:"img",…},…],…]. Each item may be an
+				// element OR a nested element array — walk both depths.
+				for (const line of content) {
+					if (Array.isArray(line)) pushImgKeys(line);
+					else pushImgKeys([line]);
+				}
+			}
+			// Real payloads carry BOTH content and content_v2 with the SAME
+			// images — dedupe by key or each screenshot downloads twice and
+			// the model sees it duplicated.
+			const unique = [...new Set(keys)];
+			for (const key of unique) {
+				const one = await resolveOneImage(msg, ctx, inboundDir, key);
+				if (one) out.push(one);
+			}
+			return out;
+		}
 		if (msg.msgType === "image") {
 			const parsed = JSON.parse(msg.content ?? "{}") as {
 				image_key?: string;
 			};
-			const key = parsed.image_key;
-			if (!key || !ctx.transport) return out;
-			const buf = await ctx.transport.downloadResource({
-				messageId: msg.messageId,
-				fileKey: key,
-				type: "image",
-			});
-			if (!buf || buf.length === 0) return out;
-			// Persist the raw image as a real local file (when a media dir is
-			// configured) so a non-vision model or external tooling can read it
-			// off disk — the pixel data is not lost just because the DSH
-			// attachment store is in-memory. Best-effort: a write failure must
-			// NOT drop the message, so fall through to the in-store path.
-			let localPath: string | undefined;
-			if (inboundDir) {
-				try {
-					const ext = imgExt(sniffImageType(buf));
-					const name = `feishu-${msg.messageId}-${Date.now()}${ext}`;
-					mkdirSync(join(inboundDir, "media"), { recursive: true });
-					const path = join(inboundDir, "media", name);
-					writeFileSync(path, buf);
-					localPath = path;
-				} catch (err) {
-					ctx.logger.warn(
-						`inbound image persist failed: ${err instanceof Error ? err.message : String(err)}`,
-					);
-				}
+			if (parsed.image_key) {
+				const one = await resolveOneImage(
+					msg,
+					ctx,
+					inboundDir,
+					parsed.image_key,
+				);
+				if (one) out.push(one);
 			}
-			const attach: AttachmentInput = {
-				path: localPath ?? "feishu://image",
-				kind: "image",
-				name: localPath ?? "feishu-image",
-			};
-			const store = ctx.attachments;
-			if (store?.saveImage) {
-				const ref = await store.saveImage({
-					data: buf,
-					mediaType: sniffImageType(buf),
-					name: attach.name,
-				});
-				attach.imageRef = ref as AttachmentInput["imageRef"];
-			}
-			out.push(attach);
 		} else if (msg.msgType === "file") {
 			const parsed = JSON.parse(msg.content ?? "{}") as {
 				file_key?: string;
@@ -156,7 +187,7 @@ async function resolveInboundAttachments(
 							const path = join(
 								inboundDir,
 								"media",
-								`feishu-${msg.messageId}-${Date.now()}-${name}`,
+								`feishu-${sanitizeAttachmentName(msg.messageId)}-${Date.now()}-${sanitizeAttachmentName(name)}`,
 							);
 							writeFileSync(path, buf);
 							localPath = path;
@@ -193,6 +224,71 @@ async function resolveInboundAttachments(
 		);
 	}
 	return out;
+}
+
+/**
+ * Shared per-image resolution (image message + post-embedded img elements):
+ * download → persist a real local file → save into the DSH attachment store
+ * (ImageBlock ref). Returns undefined on any failure (degrade, never drop).
+ */
+async function resolveOneImage(
+	msg: FeishuInboundMessage,
+	ctx: BridgeContextRead,
+	inboundDir: string | undefined,
+	imageKey: string,
+): Promise<AttachmentInput | undefined> {
+	if (!ctx.transport) return undefined;
+	const buf = await ctx.transport.downloadResource({
+		messageId: msg.messageId,
+		fileKey: imageKey,
+		type: "image",
+	});
+	if (!buf || buf.length === 0) return undefined;
+	// Persist the raw image as a real local file (when a media dir is
+	// configured) so a non-vision model or external tooling can read it
+	// off disk — the pixel data is not lost just because the DSH
+	// attachment store is in-memory. Best-effort: a write failure must
+	// NOT drop the message, so fall through to the in-store path.
+	let localPath: string | undefined;
+	if (inboundDir) {
+		try {
+			const ext = imgExt(sniffImageType(buf));
+			// ids/keys are alphanumeric — sanitize anyway so the filename is
+			// valid on every OS the bridge may run on.
+			const name = `feishu-${sanitizeAttachmentName(msg.messageId)}-${sanitizeAttachmentName(imageKey.slice(-8))}${ext}`;
+			mkdirSync(join(inboundDir, "media"), { recursive: true });
+			const path = join(inboundDir, "media", name);
+			writeFileSync(path, buf);
+			localPath = path;
+		} catch (err) {
+			ctx.logger.warn(
+				`inbound image persist failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+	const attach: AttachmentInput = {
+		path: localPath ?? "feishu://image",
+		kind: "image",
+		name: localPath ?? "feishu-image",
+	};
+	// ctx.attachments is a LIVE getter — the service may have mounted after
+	// the bridge loaded (Cordis load order); re-read it right here.
+	const store = ctx.attachments;
+	if (store?.saveImage) {
+		try {
+			const ref = await store.saveImage({
+				data: buf,
+				mediaType: sniffImageType(buf),
+				name: attach.name,
+			});
+			attach.imageRef = ref as AttachmentInput["imageRef"];
+		} catch (err) {
+			ctx.logger.warn(
+				`inbound image saveImage failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+	return attach;
 }
 
 export function createMessageHandler(deps: MessageHandlerDeps): MessageHandler {

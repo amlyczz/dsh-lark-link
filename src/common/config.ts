@@ -32,6 +32,18 @@ export interface FeishuConfig {
 		/** Completion marker (never in the random pool). */
 		done: string;
 	};
+	/** Inbound media (downloaded Feishu images/files).
+	 * Transient turn artifacts: default root is the OS temp dir with
+	 * age-based sweeping — see attachments.dir / retentionHours. */
+	attachments: {
+		/** Root override for inbound media. Empty = OS temp dir
+		 * (recommended: the OS may clear it at any time, the sweeper bounds
+		 * growth). Applied at startup — changing it needs a reload. */
+		dir: string;
+		/** Hours an inbound image/file survives on disk. 0 = keep forever
+		 * (pin attachments.dir to a durable location first). Hot-reloadable. */
+		retentionHours: number;
+	};
 	/** Outbox tuning. */
 	outbox: {
 		/** Max attempts before an envelope becomes fatal. */
@@ -104,6 +116,12 @@ export const DEFAULT_CONFIG: FeishuConfig = {
 		pool: ["THUMBSUP", "OK", "HEART", "LAUGH", "SMILE", "WOW", "CLAP", "Fire"],
 		done: "DONE",
 	},
+	attachments: {
+		dir: "",
+		// 7 days: long enough for multi-day conversations to re-read an
+		// image with tools; the OS temp cleaner is an additional floor.
+		retentionHours: 168,
+	},
 	outbox: {
 		maxAttempts: 50,
 		backoffMaxMs: 60_000,
@@ -143,7 +161,54 @@ export const HOT_RELOADABLE: ReadonlyArray<keyof FeishuConfig> = [
 	"reactions",
 	"denyList",
 	"allowlist",
+	"attachments",
 ];
+
+/**
+ * Parse a /lark-config key path into a hot-reload patch.
+ *
+ * Accepts BOTH top-level keys ("denyList") and dotted paths under
+ * object-valued whitelist keys ("streaming.enabled", "streaming.printStep") —
+ * the dotted form is what users naturally type for the streaming knobs and
+ * used to be rejected with 不可热改 because only the exact top-level names
+ * were matched. Unknown top-level segments and unknown/over-deep nested keys
+ * throw so typos never silently no-op.
+ */
+export function buildHotReloadPatch(
+	key: string,
+	value: unknown,
+): Partial<FeishuConfig> {
+	const segments = key.split(".").filter((s) => s !== "");
+	if (segments.length === 0)
+		throw new Error(`config key "${key}" is not hot-reloadable`);
+	const head = segments[0] as string;
+	const rest = segments.slice(1);
+	if (!HOT_RELOADABLE.includes(head as never))
+		throw new Error(`config key "${head}" is not hot-reloadable`);
+	if (rest.length === 0) return { [head]: value } as Partial<FeishuConfig>;
+	// Dotted path: only ONE level of nesting exists in FeishuConfig
+	// (streaming.*, reactions.*, outbox.*, supervisor.*, quota.*) and the
+	// nested record must already declare the sub-key.
+	if (rest.length > 1)
+		throw new Error(
+			`config key "${key}" is unknown (FeishuConfig nests one level deep)`,
+		);
+	const nested = DEFAULT_CONFIG[head as keyof FeishuConfig] as Record<
+		string,
+		unknown
+	>;
+	const nestedKey = rest[0] as string;
+	if (
+		typeof nested !== "object" ||
+		nested === null ||
+		Array.isArray(nested) ||
+		!(nestedKey in nested)
+	)
+		throw new Error(
+			`config key "${key}" is unknown (not a configurable nested key)`,
+		);
+	return { [head]: { [nestedKey]: value } } as unknown as Partial<FeishuConfig>;
+}
 
 export function deepMerge<T>(base: T, over: Partial<T>): T {
 	const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };

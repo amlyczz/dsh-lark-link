@@ -14,6 +14,7 @@ import {
 	button,
 	modeCard,
 	questionCard,
+	resumeCard,
 } from "../../../src/presentation/cards.ts";
 
 type Json = Record<string, unknown>;
@@ -189,4 +190,60 @@ test("questionCard 多选：form_container + multi_select_static + 提交/onSubm
 	assert.equal(onSubmit[0]?.value?.op, "uqam:q9");
 	// 多选卡片不应有立即提交的单选项按钮
 	assert.equal(collectButtons(body).length, 0, "多选不渲染立即提交按钮");
+});
+
+
+// ---- /resume picker card ------------------------------------------------------
+
+function resumeButtons(card: unknown): Array<{ behaviors?: Array<{ value?: Json }>; disabled?: boolean }> {
+	const c = card as { body?: { elements?: unknown[] } };
+	return (c.body?.elements ?? []).filter(
+		(e): e is { behaviors?: Array<{ value?: Json }>; disabled?: boolean } =>
+			(e as { tag?: string }).tag === "button",
+	);
+}
+
+test("resumeCard: button ops ENCODE the session id so colons survive card-action splitting", () => {
+	const card = resumeCard(
+		[
+			{ id: "lark-link:dm:oc_x:nonce1:0", createdAt: Date.now() - 60_000 },
+			{ id: "7c9e067f-abc", createdAt: Date.now() - 3_600_000 },
+		],
+		undefined,
+		{ now: () => 2_000_000_000_000 },
+	);
+	const ops = resumeButtons(card).map(
+		(b) => (b.behaviors?.[0]?.value as { op?: string })?.op ?? "",
+	);
+	assert.equal(ops.length, 2);
+	assert.equal(ops[0], "resume:lark-link~1dm~1oc_x~1nonce1~10".replaceAll("~1", "%3A"));
+	assert.equal(ops[1], "resume:7c9e067f-abc");
+});
+
+test("resumeCard: relative times, preset badges, current-session row disabled, empty state", () => {
+	const now = Date.now();
+	const card = resumeCard(
+		[
+			{ id: "s1", createdAt: now - 5 * 60_000, preset: "code" },
+			{ id: "s2", createdAt: now - 3 * 86400_000, preset: "standard" },
+		],
+		"s2",
+		{ now: () => now },
+	);
+	const buttons = resumeButtons(card) as Array<{
+		text?: { content?: string };
+		behaviors?: Array<{ value?: Json }>;
+		disabled?: boolean;
+	}>;
+	assert.match(buttons[0]?.text?.content ?? "", /5 分钟前/);
+	assert.match(buttons[1]?.text?.content ?? "", /3 天前/);
+	assert.match(buttons[1]?.text?.content ?? "", /当前会话/);
+	const texts = JSON.stringify(card);
+	assert.match(texts, /code/, "preset shown");
+	// current session listed but its button disabled
+	assert.equal(buttons[1]?.disabled, true, "current session row disabled");
+	assert.match(texts, /当前/);
+
+	const empty = resumeCard([], undefined, { now: () => now });
+	assert.match(JSON.stringify(empty), /暂无历史会话/);
 });

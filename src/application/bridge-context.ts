@@ -51,8 +51,14 @@ export interface BridgeContextDeps {
   backend?: DshSessionBackend;
   router?: RouteStore;
   sender?: FeishuSender;
-  /** DSH attachment store (ctx.attachments) — for inbound image blocks. */
-  attachments?: ImageAttachmentService;
+  /**
+   * DSH attachment store (ctx.attachments) — for inbound image blocks.
+   * LIVE GETTER, not a snapshot (the file's own lesson): the service may
+   * mount after the plugin loads (Cordis load order); a construction-time
+   * read would stay undefined forever and every inbound image would
+   * silently lose its imageRef — the model would never see the image.
+   */
+  attachmentsRef?: () => ImageAttachmentService | undefined;
 }
 
 /** Read-side surface used by application services. */
@@ -140,7 +146,7 @@ export function createBridgeContext(deps: BridgeContextDeps): BridgeContext {
       return deps.sender;
     },
     get attachments() {
-      return deps.attachments;
+      return deps.attachmentsRef?.();
     },
     get logger() {
       return deps.logger;

@@ -67,6 +67,17 @@ export interface DshAdapterDeps {
 	) => Promise<{
 		answers: Array<{ id: string; selected: string[]; custom?: string }>;
 	}>;
+	/**
+	 * Bridge permission preset (read-only | workspace-write |
+	 * danger-full-access), applied PER SESSION at agent creation and resume
+	 * (GH #8) — the bridge never writes the host's global permission default
+	 * anymore; this knob governs bridge sessions only.
+	 */
+	permissionMode?: () => string;
+	/** Active session id for this conversation (e.g. persisted across dsh restarts). */
+	activeSessionId?: (key: string) => string | undefined;
+	/** Callback to persist the active session id for this conversation. */
+	setActiveSessionId?: (key: string, sessionId: string | undefined) => void;
 	logger?: { info(msg: string): void; warn(msg: string): void };
 }
 
@@ -82,6 +93,15 @@ interface AgentRegistrySurface {
 			delegationDepth?: number;
 			agentPreset?: string;
 		};
+		agentOptions?: {
+			provider: string;
+			model: string;
+		};
+		setup?: (agentCtx: Context) => unknown;
+	}): Promise<AgentHandleSurface>;
+	/** Load a persisted session and resume an agent on it (/resume). */
+	resume(opts: {
+		resumeSessionId: string;
 		agentOptions?: {
 			provider: string;
 			model: string;
@@ -136,6 +156,31 @@ function toSessionEventOut(ev: SessionEvent): SessionEventOut | undefined {
 	}
 }
 
+export function isImageUnsupportedError(
+	errText: string,
+	errCode?: string,
+): boolean {
+	if (
+		errCode === "UNSUPPORTED_CONTENT" &&
+		/image|vision|multimodal|content/i.test(errText)
+	)
+		return true;
+	return (
+		/does not support image/i.test(errText) ||
+		/does not support .*image/i.test(errText) ||
+		/adapter does not support image/i.test(errText) ||
+		/model .* does not support image/i.test(errText) ||
+		(/model does not support/i.test(errText) &&
+			/image|vision/i.test(errText)) ||
+		/image (?:input|content) is not supported/i.test(errText) ||
+		/not support (?:image|images|vision|multimodal)/i.test(errText) ||
+		/unsupported (?:image|content|content_type)/i.test(errText) ||
+		/cannot represent .*image/i.test(errText) ||
+		/image.*requires the durable attachment service/i.test(errText) ||
+		/UNSUPPORTED_CONTENT/i.test(errText)
+	);
+}
+
 /** Keep track of last-use for idle TTL (bridge-owned agents only). */
 interface Tracked {
 	handle: AgentHandle;
@@ -178,10 +223,56 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		deps.runNonce ??
 		`${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 	// Per-key generation: /new bumps it so the next agent gets a FRESH session
-	// id (a new GUI conversation row) instead of reusing the same log.
+	// id without colliding with the persisted log from the previous generation.
 	const generations = new Map<string, number>();
 	const bridgeKey = (key: string): string =>
 		`${deps.sessionPrefix}:${key}:${runNonce}:${generations.get(key) ?? 0}`;
+	// /resume: a pending resume target makes the NEXT ensureAgent load the
+	// persisted log via agents.resume instead of creating; the stored preset
+	// override pins the recomposition (resume must mount the world the
+	// history was recorded with, not the conversation's current /mode).
+	const pendingResume = new Map<string, { sessionId: string }>();
+	const presetOverrides = new Map<string, string>();
+	// Non-vision model degrade (observed: pi-ai model "qwen3.8-27b", "glm-5.3",
+	// deepseek chat-completions adapter rejecting image blocks).
+	// Once a conversation or model rejects an ImageBlock we remember it and
+	// never attach one again — images degrade to the local-path note (model
+	// reads them with read_image or shell/code), and the in-flight turn is
+	// retried text-only after the agent settles idle so it still produces a reply.
+	const imageUnsupportedKeys = new Set<string>();
+	const imageUnsupportedModels = new Set<string>();
+	// One-shot marker set when a degrade retry is issued; consumed by the
+	// bridge's silent-turn recovery (see DshSessionBackend.consumeImageRetryGrace).
+	const imageRetryGrace = new Set<string>();
+	const pendingImageRetry = new Map<
+		string,
+		ReturnType<typeof createUserMessage>
+	>();
+	// Detach a key's live agent WITHOUT disposing it (rotate / resume): drop
+	// listeners + tracking so the old session row stays listed in the GUI and
+	// its persisted log survives; mint a fresh runNonce so any later create
+	// can never collide with the old id family.
+	const rotateKey = (key: string): void => {
+		// A stale text-only twin must not survive rotation — the turn it
+		// belonged to is gone. (imageUnsupported intentionally persists:
+		// the model's lack of image support does not change with the session.)
+		pendingImageRetry.delete(key);
+		runNonce = `${Date.now().toString(36)}${Math.random()
+			.toString(36)
+			.slice(2, 6)}`;
+		generations.delete(key);
+		presetOverrides.delete(key);
+		deps.setActiveSessionId?.(key, undefined);
+		const t = tracked.get(key);
+		if (t) {
+			disposers.get(key)?.();
+			disposers.delete(key);
+			listeners.delete(key);
+			tracked.delete(key);
+			const oldId = t.handle.sessionId;
+			if (oldId) keyBySession.delete(oldId);
+		}
+	};
 
 	async function ensureAgent(key: string): Promise<AgentHandle> {
 		const existing = tracked.get(key);
@@ -203,7 +294,12 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 
 		const p = (async (): Promise<AgentHandle> => {
 
-		let sessionId = bridgeKey(key);
+		// /resume: a pending target loads the PERSISTED session through
+		// agents.resume (factory awaits sessionPersistence.prepare) instead
+		// of creating — the agent identity, GUI row and event wiring are all
+		// identical afterwards.
+		const pending = pendingResume.get(key);
+		let sessionId = pending?.sessionId ?? bridgeKey(key);
 		let owned: AgentHandleSurface;
 		// The bridge creates raw agents, so — like dsh-headless — it must
 		// carry the deployment default model (agentDefaultModel service) into
@@ -228,7 +324,9 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		// Shared composition for both create and resume (see the already-exists
 		// fallback in the catch below): model selection, agent preset mount,
 		// and the ask_user_question shadow tool must exist on a resumed agent
-		// exactly as on a freshly created one.
+		// exactly as on a freshly created one. `presetOverride` pins the
+		// STORED preset of a resumed session (resume must recompose the same
+		// world the history was recorded with, not the current override).
 		const setup = async (agentCtx: Context) => {
 			// Model selection (optional — depends on the deployment
 			// agentDefaultModel service). Per-key live object: mutating it (via
@@ -256,7 +354,10 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				}
 			).get?.("agentPresets");
 			if (presets?.mount) {
-				await presets.mount(agentCtx, deps.preset?.(key) ?? "ptc");
+				await presets.mount(
+				agentCtx,
+				presetOverrides.get(key) ?? deps.preset?.(key) ?? "ptc",
+			);
 			}
 			// Shadow ask_user_question: forward DSH intent-confirmation
 			// questions to Feishu cards instead of the GUI-only provider.
@@ -384,49 +485,49 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			}
 			return undefined; // void — disposer is agentCtx-scoped
 		};
-		try {
-			owned = await c.agents.create({
-				sessionId,
-				// cwd is REQUIRED: prompt sections like deployment:persona interpolate
-				// {{cwd}} — a session without it fails assembly with
-				// "prompt variable \"{{cwd}}\" has no value for this assembly".
-				// agentPreset: the web profile disables tool rows at the host plane
-				// and mounts them per-session via presets — without "standard" the
-				// bridge agent has NO bash/fs/goal/subagent tools (session-log
-				// evidence: `Error: unknown tool \"bash\"` / "write_file" / …).
-				meta: {
-					cwd: deps.cwd?.(key) ?? process.cwd(),
-					agentPreset: deps.preset?.(key) ?? "ptc",
-				},
-				...(agentOptions ? { agentOptions } : {}),
-				setup,
-			});
-		} catch (err) {
-			// runNonce is persisted across restarts (352af88) so the session id
-			// can already exist in the DSH store when a restarted bridge tries
-			// to create it again — the store refuses (session "…" already
-			// exists). Resume the persisted session instead of failing: the
-			// agent identity survives, the GUI keeps the same conversation row,
-			// and the event wiring below works identically for a resumed agent.
-			if (err instanceof Error && /already exists/.test(err.message)) {
-				// The persisted session id is taken. dsh-agent-loop's resume is
-				// UNUSABLE here: it returns successfully, but the first turn then
-				// fails with "already has a persisted log on disk that does not
-				// match this live session (id collision)" — the mismatch check is
-				// lazy (deferred to turn time). So don't resume; mint a FRESH
-				// run nonce and create a brand-new session instead. The old log
-				// is left in place (orphaned, harmless); the GUI gets a new
-				// conversation row, and the message gets a reply.
-				deps.logger?.warn(
-					`session id taken for ${key} — minting fresh session (resume is broken for mismatched logs)`,
+		if (pending) {
+			// Resume path — the persisted session id is EXPLICIT, there is no
+			// create/collision concern; a failure here must surface to /resume.
+			try {
+				owned = await c.agents.resume({
+					resumeSessionId: pending.sessionId,
+					...(agentOptions ? { agentOptions } : {}),
+					setup,
+				});
+				sessionId = pending.sessionId;
+				deps.setActiveSessionId?.(key, sessionId);
+			} catch (err) {
+				throw new Error(
+					`failed to resume session "${pending.sessionId}" for ${key}: ${err instanceof Error ? err.message : String(err)}`,
 				);
-				runNonce = `${Date.now().toString(36)}${Math.random()
-					.toString(36)
-					.slice(2, 6)}`;
-				const freshId = bridgeKey(key);
+			}
+		} else {
+			// If there is an active session recorded for this conversation (e.g. before dsh restart),
+			// resume it so the conversation continues in the same session.
+			const activeId = deps.activeSessionId?.(key);
+			let resumedOwned: AgentHandleSurface | undefined;
+			if (activeId) {
+				try {
+					resumedOwned = await c.agents.resume({
+						resumeSessionId: activeId,
+						...(agentOptions ? { agentOptions } : {}),
+						setup,
+					});
+					sessionId = activeId;
+				} catch (err) {
+					deps.logger?.warn(
+						`failed to resume active session "${activeId}" for ${key}: ${err instanceof Error ? err.message : String(err)} — falling back to create fresh session`,
+					);
+				}
+			}
+
+			if (resumedOwned) {
+				owned = resumedOwned;
+			} else {
+				sessionId = bridgeKey(key);
 				try {
 					owned = await c.agents.create({
-						sessionId: freshId,
+						sessionId,
 						meta: {
 							cwd: deps.cwd?.(key) ?? process.cwd(),
 							agentPreset: deps.preset?.(key) ?? "ptc",
@@ -434,21 +535,48 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 						...(agentOptions ? { agentOptions } : {}),
 						setup,
 					});
-				} catch (err2) {
-					// The re-try also failed (e.g. a leftover freshId collision).
-					// Surface a clear error instead of a raw "already exists"
-					// escaping and killing the inbound handler.
-					throw new Error(
-						`failed to mint fresh session for ${key} (was "${sessionId}"): ${err2 instanceof Error ? err2.message : String(err2)}`,
-					);
+					deps.setActiveSessionId?.(key, sessionId);
+				} catch (err) {
+					if (err instanceof Error && /already exists|already has a persisted log/i.test(err.message)) {
+						try {
+							owned = await c.agents.resume({
+								resumeSessionId: sessionId,
+								...(agentOptions ? { agentOptions } : {}),
+								setup,
+							});
+							deps.setActiveSessionId?.(key, sessionId);
+						} catch (resumeErr) {
+							deps.logger?.warn(
+								`session id collision for ${key} and resume failed — minting fresh session: ${String(resumeErr)}`,
+							);
+							runNonce = `${Date.now().toString(36)}${Math.random()
+								.toString(36)
+								.slice(2, 6)}`;
+							const freshId = bridgeKey(key);
+							try {
+								owned = await c.agents.create({
+									sessionId: freshId,
+									meta: {
+										cwd: deps.cwd?.(key) ?? process.cwd(),
+										agentPreset: deps.preset?.(key) ?? "ptc",
+									},
+									...(agentOptions ? { agentOptions } : {}),
+									setup,
+								});
+								sessionId = freshId;
+								deps.setActiveSessionId?.(key, sessionId);
+							} catch (err2) {
+								throw new Error(
+									`failed to mint fresh session for ${key} (was "${sessionId}"): ${err2 instanceof Error ? err2.message : String(err2)}`,
+								);
+							}
+						}
+					} else {
+						throw new Error(
+							`failed to create DSH agent for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					}
 				}
-				// The fresh session has a new id — subsequent wiring (handle
-				// sessionId, keyBySession) must use it, not the collided id.
-				sessionId = freshId;
-			} else {
-				throw new Error(
-					`failed to create DSH agent for ${key}: ${err instanceof Error ? err.message : String(err)}`,
-				);
 			}
 		}
 		if (!owned?.agent)
@@ -501,6 +629,40 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		}
 		const agent = owned.agent;
 
+		// GH #8: scope the bridge's permissionMode to THIS session — the same
+		// pattern the /permission handler uses — instead of writing the host's
+		// global settings document (which silently flipped the deployment-wide
+		// default, including non-Feishu sessions). Best-effort, never fatal;
+		// absent services (bare host) just leave the composed default.
+		try {
+			const services = c as unknown as {
+				get?(name: string): unknown;
+			};
+			const permission = services.get?.("permissionPresets") as
+				| {
+						apply?(
+							session: unknown,
+							name: string,
+							setApproval: (policy: string) => void,
+						): void;
+				  }
+				| undefined;
+			const approval = services.get?.("approval") as
+				| { setPolicy?(agent: unknown, policy: string): unknown }
+				| undefined;
+			const mode = deps.permissionMode?.();
+			if (permission?.apply && agent.session && mode) {
+				permission.apply(agent.session, mode, (policy) => {
+					approval?.setPolicy?.(agent, policy);
+				});
+				deps.logger?.info(`permission for ${key} set to ${mode} (session-scoped)`);
+			}
+		} catch (err) {
+			deps.logger?.warn(
+				`permission apply failed for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+
 		const handle: AgentHandle = {
 			agentId: agent.id,
 			sessionId,
@@ -508,13 +670,38 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				// Attach inbound Feishu images as ImageBlocks (visual model) and fold
 				// extracted file text into the prompt — the text stays first so the
 				// model sees the message context.
+				// An image is NEVER silent: with an imageRef it becomes an
+				// ImageBlock, and whenever a real local file exists its path is
+				// folded into the text too — a non-vision model (or one that
+				// wants to re-read/transform the pixels with tools) can still
+				// act on it. Previously an image without imageRef (attachments
+				// service absent at load time) vanished without a trace and
+				// the model answered "I don't see any image".
 				const parts = [text];
 				const content: Array<Record<string, unknown>> = [
 					{ type: "text", text },
 				];
+				const currentModel = selFor(key);
+				const modelTag =
+					currentModel?.provider && currentModel?.model
+						? `${currentModel.provider}/${currentModel.model}`
+						: undefined;
+				const isUnsupported =
+					imageUnsupportedKeys.has(key) ||
+					(modelTag ? imageUnsupportedModels.has(modelTag) : false);
+
 				for (const a of attachments ?? []) {
-					if (a.kind === "image" && a.imageRef) {
-						content.push({ type: "image", attachment: a.imageRef });
+					if (a.kind === "image") {
+						if (a.imageRef && !isUnsupported) {
+							content.push({ type: "image", attachment: a.imageRef });
+						}
+						if (a.path && !a.path.startsWith("feishu://")) {
+							parts.push(
+								`\n\n[用户发送了图片，已保存到本地: ${a.path}（需要查看时用 read_image 工具读取该路径）]`,
+							);
+						} else if (!a.imageRef) {
+							parts.push("\n\n[用户发送了图片，但未能保存（无附件服务）]");
+						}
 					} else if (a.kind === "file" && a.textPreview) {
 						parts.push(`\n\n[附件 ${a.name ?? "文件"} 内容]\n${a.textPreview}`);
 					} else if (a.kind === "file") {
@@ -526,6 +713,20 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 					content: content as never,
 					source: { kind: "user" },
 				});
+				if (content.length > 1) {
+					// ImageBlock(s) attached: keep a text-only twin so an
+					// image-unsupported model error can retry this very turn
+					// without the blocks (path note is already in the text).
+					pendingImageRetry.set(
+						key,
+						createUserMessage({
+							content: [content[0]] as never,
+							source: { kind: "user" },
+						}),
+					);
+				} else {
+					pendingImageRetry.delete(key);
+				}
 				// sync, void — errors surface via agent/error and turn/end(rejected)
 				agent.followup(message);
 			},
@@ -549,6 +750,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				tracked.delete(key);
 				keyBySession.delete(sessionId);
 				listeners.delete(key);
+				pendingImageRetry.delete(key);
 			},
 		};
 		tracked.set(key, { handle, lastUsedAt: Date.now() });
@@ -573,9 +775,57 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		const errDisp = agent.ctx.on(
 			"agent/error",
 			(payload: { error?: unknown }) => {
-				deps.logger?.warn(
-					`agent error for ${key}: ${payload.error instanceof Error ? payload.error.message : String(payload.error)}`,
-				);
+				const errText =
+					payload.error instanceof Error
+						? payload.error.message
+						: String(payload.error);
+				const errObj = payload.error as Record<string, unknown> | undefined;
+				const errCode = (errObj?.code ??
+					(errObj?.failure as Record<string, unknown> | undefined)?.code) as
+					| string
+					| undefined;
+				deps.logger?.warn(`agent error for ${key}: ${errText}`);
+				// Non-vision model: degrade instead of dying. Mark the
+				// conversation and model (future images → path note only) and retry
+				// the in-flight turn without the ImageBlocks so the user
+				// still gets a reply instead of "turn ended: error".
+				if (isImageUnsupportedError(errText, errCode)) {
+					imageUnsupportedKeys.add(key);
+					const currentModel = selFor(key);
+					if (currentModel?.provider && currentModel?.model) {
+						imageUnsupportedModels.add(
+							`${currentModel.provider}/${currentModel.model}`,
+						);
+					}
+					const retry = pendingImageRetry.get(key);
+					if (retry) {
+						pendingImageRetry.delete(key);
+						imageRetryGrace.add(key);
+						// IMPORTANT: Defer followup() until after the agent loop finishes
+						// unwinding the errored turn and returns to idle. Inside throwError()
+						// the agent is still "running" and wakeup requests sent without an
+						// abort signal are not latched, which would leave the retry permanently
+						// stuck in the inbox.
+						void (async () => {
+							try {
+								if (
+									typeof (agent as { whenIdle?: () => Promise<void> }).whenIdle ===
+									"function"
+								) {
+									await (agent as { whenIdle: () => Promise<void> }).whenIdle();
+								}
+								agent.followup(retry);
+								deps.logger?.info(
+									`model rejects image input for ${key}; retried text-only (image stays on disk, read_image available)`,
+								);
+							} catch (err) {
+								deps.logger?.warn(
+									`text-only retry failed for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+								);
+							}
+						})();
+					}
+				}
 			},
 		);
 		disposers.set(key, errDisp);
@@ -591,8 +841,38 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 	}
 
 	return {
+		consumeImageRetryGrace(key: string): boolean {
+			if (imageRetryGrace.has(key)) {
+				imageRetryGrace.delete(key);
+				return true;
+			}
+			return false;
+		},
+		clearImageUnsupported(key?: string) {
+			if (key) {
+				imageUnsupportedKeys.delete(key);
+			} else {
+				imageUnsupportedKeys.clear();
+				imageUnsupportedModels.clear();
+			}
+		},
 		async ensureAgent(key) {
 			return ensureAgent(key);
+		},
+		async resumeAgent(key, sessionId, opts) {
+			// Detach the current agent exactly like /new (rotateKey mints a
+			// fresh nonce + drops listeners/tracking) — NEVER dispose it: the
+			// previous session's GUI row and persisted log must survive.
+			rotateKey(key);
+			if (opts?.preset) presetOverrides.set(key, opts.preset);
+			pendingResume.set(key, { sessionId });
+			try {
+				// Reuse the FULL ensureAgent pipeline (in-flight collapse,
+				// setup composition, workspace attach, handle wiring).
+				return await ensureAgent(key);
+			} finally {
+				pendingResume.delete(key);
+			}
 		},
 		get: (key) => tracked.get(key)?.handle,
 		keyForSessionId: (sessionId) => keyBySession.get(sessionId),
@@ -664,26 +944,9 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			// an earlier run (same runNonce family), and DSH then fails the first
 			// turn with "already persisted at a different cwd (id collision)" —
 			// no reply after /new. Fresh runNonce + generation 0 gives a
-			// collision-free id every time.
-			runNonce = `${Date.now().toString(36)}${Math.random()
-				.toString(36)
-				.slice(2, 6)}`;
-			generations.delete(key);
-			// The OLD agent must no longer be reused (next message opens a fresh
-			// session row), but it must NOT be torn down via handle.dispose() —
-			// that removes its session from the store and the previous
-			// conversation vanishes from the GUI list. Lightweight detach: drop
-			// listeners + tracking so the old session id stays listed; the agent
-			// idles out via the TTL sweep.
-			const t = tracked.get(key);
-			if (t) {
-				disposers.get(key)?.();
-				disposers.delete(key);
-				listeners.delete(key);
-				tracked.delete(key);
-				const oldId = t.handle.sessionId;
-				if (oldId) keyBySession.delete(oldId);
-			}
+			// collision-free id every time. (rotateKey also keeps the OLD agent
+			// alive — its session stays listed; see the comment there.)
+			rotateKey(key);
 		},
 		async dispose(key) {
 			const t = tracked.get(key);

@@ -78,3 +78,19 @@ test("router: empty text is skipped", async () => {
   const { router } = makeRouter();
   assert.equal(await router.route(mkMsg("")), "skipped");
 });
+
+test("router: /resume is a Tier-1 bridge command (handled before DSH tier)", async () => {
+  // DSH ALSO registers a /resume command (tier 2) — the Feishu-side picker
+  // must win first, exactly like /permission.
+  const seen: string[] = [];
+  const { router } = makeRouter({
+    dshHas: ["resume"],
+    bridgeHandler: async (name) => {
+      seen.push(name);
+      return name === "resume";
+    },
+  });
+  assert.equal(await router.route(mkMsg("/resume")), "bridge");
+  assert.equal(await router.route(mkMsg("/resume 2")), "bridge");
+  assert.deepEqual(seen, ["resume", "resume"]);
+});

@@ -97,20 +97,45 @@ function pickText(
 	try {
 		const parsed = JSON.parse(contentRaw) as Record<string, unknown>;
 		if (typeof parsed.text === "string") return parsed.text;
-		// post with text segments
-		const content = parsed.content as
-			| {
-					paragraphs?: Array<{
-						elements?: Array<{ text_run?: { content?: string } }>;
-					}>;
-			  }
-			| undefined;
-		if (msgType === "post" && content?.paragraphs) {
-			return content.paragraphs
-				.map((p) =>
-					(p.elements ?? []).map((e) => e.text_run?.content ?? "").join(""),
-				)
-				.join("\n");
+		if (msgType === "post") {
+			// post v2: content = { paragraphs: [{ elements: [{text_run}] }] }
+			const content = parsed.content as
+				| {
+						paragraphs?: Array<{
+							elements?: Array<{ text_run?: { content?: string } }>;
+						}>;
+				  }
+				| undefined;
+			if (content?.paragraphs) {
+				return content.paragraphs
+					.map((p) =>
+						(p.elements ?? [])
+							.map((e) => e.text_run?.content ?? "")
+							.join(""),
+					)
+					.join("\n");
+			}
+			// post v1 (STILL the default for bot-received events, observed
+			// 2026-08-19): content = [[{tag:"img",…},{tag:"text",text:"…"}], …]
+			// — an array of arrays of elements. Join text element `text`
+			// fields per paragraph; img/other tags contribute nothing (the
+			// image pipeline resolves them into attachments separately).
+			if (Array.isArray(parsed.content)) {
+				const lines = (parsed.content as unknown[][]).map((line) =>
+					(Array.isArray(line) ? line : [line])
+						.map((e) => {
+							const el = e as { tag?: string; text?: string };
+							return el?.tag === "text" && typeof el.text === "string"
+								? el.text
+								: "";
+						})
+						.join(""),
+				);
+				// Image-only paragraphs render as empty lines — drop them so
+				// the caption does not arrive prefixed with "\n".
+				const text = lines.filter((l) => l.trim().length > 0).join("\n");
+				if (text.trim()) return text;
+			}
 		}
 		if (typeof parsed.content === "string") return parsed.content;
 	} catch {
@@ -189,7 +214,17 @@ export function normalizeInbound(
 		senderOpenId,
 		msgType,
 		content: msg.content ?? raw.content ?? "",
-		text: pickText(msg.content ?? raw.content, msgType),
+		// Media messages carry NO text — their content is a resource JSON
+		// ({"image_key": …}). Without an explicit placeholder the
+		// conversation layer fell back to `msg.content` and the model
+		// literally received the image_key JSON as the user message
+		// ("我收到的消息里只有一个图片标识符").
+		text:
+			msgType === "image"
+				? "[图片]"
+				: msgType === "file"
+					? "[文件]"
+					: pickText(msg.content ?? raw.content, msgType),
 		rootId: msg.root_id ?? raw.root_id,
 		parentId: msg.parent_id ?? raw.parent_id,
 		threadId: msg.thread_id ?? raw.thread_id,
@@ -243,6 +278,31 @@ export interface FeishuClientLike {
 	listMessages?(
 		params: unknown,
 	): Promise<{ items?: Array<{ message_id?: string; create_time?: string }> }>;
+	/** CardKit v1: create a card entity (streaming cards). */
+	cardkitCreateCard?(
+		payload: unknown,
+	): Promise<{ card_id?: string; data?: { card_id?: string } } | undefined>;
+	/** CardKit v1: deliver a card entity into a chat (entity sends ONCE). */
+	cardkitDeliverCard?(params: {
+		chatId: string;
+		cardId: string;
+	}): Promise<unknown>;
+	/** CardKit v1: PUT full-text streaming update on an element. */
+	cardkitStreamText?(
+		cardId: string,
+		elementId: string,
+		body: Record<string, unknown>,
+	): Promise<unknown>;
+	/** CardKit v1: PATCH card settings (e.g. streaming off). */
+	cardkitPatchSettings?(
+		cardId: string,
+		body: Record<string, unknown>,
+	): Promise<unknown>;
+	/** CardKit v1: PUT full card update (final content). */
+	cardkitUpdateCard?(
+		cardId: string,
+		body: Record<string, unknown>,
+	): Promise<unknown>;
 }
 
 export interface TransportDeps {

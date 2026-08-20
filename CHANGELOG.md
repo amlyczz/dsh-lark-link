@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.4.0
+
+### Follow-up fixes (发布前自测反馈)
+
+- **dsh 重启后飞书发消息「新建会话」→ 现在续接同一会话**：重启后会话 id 不再随机漂移。每个会话的 `activeSessionId` 持久化到 `conversation-overrides.json`；`ensureAgent` 在创建前先 `agents.resume(activeSessionId)` 续接（create 撞「already exists」时同样回退 resume），只有 resume 失败（会话被清理）才新建。之前 `runNonce` 每次启动随机 → 重启后同一条消息必开新会话行，对话上下文全部丢失。
+- **`/stop` 后再对话「新起一轮会话」→ 现在同一会话继续**：`/stop` 只取消当前 turn（`conversations.stop(key)`），不再 rotate/dispose 会话，也不清 `activeSessionId`；silent 恢复逻辑显式排除 `aborted`（用户主动取消 ≠ 卡死），下一条消息继续原会话上下文。
+- **图片：模型找不到图片（双根因）**
+  1. `ctx.get("attachments")` 在插件加载时被**一次性快照**——DSH 附件服务若晚于插件挂载（Cordis 加载顺序），永远是 `undefined`，`imageRef` 从不生成，ImageBlock 从不入 content，模型对图片一无所知。改为 **live getter**（`attachmentsRef`，违反的正是 bridge-context 自己头部声明的 GETTER 原则）。
+  2. 即使无 imageRef / 非视觉模型，图片也不再**静默消失**：本地保存路径折入文本（`[用户发送了图片，已保存到本地: …]`），模型可用工具读取；post 富文本内嵌的 `{tag:"img"}` 图片现在逐个提取下载（之前只提 text_run 文字，图全丢）。图片文件名改用 `imageKey` 后缀（确定性、多图不碰撞）。
+- **入站附件改存系统临时目录 + TTL 自动清理（默认 7 天）**：图片/文件此前永久累积在 `~/.dsh/lark-link/inbound/media/`（状态目录）。现在默认落 `os.tmpdir()` 下的 `dsh-lark-link/inbound/`（Linux/macOS/Windows 各自的系统临时目录，OS 亦可随时回收），新增 `attachments.retentionHours`（**默认 168h = 7 天**，`/lark-config attachments.retentionHours=48` 热改生效；0 = 永久保留）与 `attachments.dir`（自定义根目录，重启生效）。启动即清扫一次（清掉上次运行遗留）+ 每小时按 mtime 清扫过期文件。旧目录 `~/.dsh/lark-link/inbound/`（484K）已不再写入，可手动删除。**跨平台加固**：① 落盘文件名统一 `sanitizeAttachmentName`（Windows 保留字符 `<>:"/\\|?*`、控制字符、尾点/尾空格全部替换，中文保留）——macOS 截图名里的 `:` 不再产生 Windows 非法文件名；② 清扫删除带 `force + maxRetries`（Windows 上文件被占用时 EBUSY/EPERM 短暂重试，下次清扫兜底）；③ 全程 `node:path` join + 现有 `isAbsoluteAny`/`relative` 判定（round-1 GH #7 已覆盖 UNC/盘符路径），无硬编码分隔符。
+- **非视觉模型发图报错「本轮运行失败 UNSUPPORTED_CONTENT」（qwen3.8-27b / DeepSeek 等）**：
+  1. **正则漏匹配 DeepSeek**：DeepSeek 抛出 `The DeepSeek chat-completions adapter does not support image content.`（含 `content` 而非 `input`），旧正则仅匹配 `image input` 导致 DeepSeek 报错未被捕获。现提取 `isImageUnsupportedError` 全面匹配 DeepSeek、pi-ai（qwen/glm 等）、`UNSUPPORTED_CONTENT`、`unsupported_content_type` 等各类非视觉模型报错。
+  2. **`agent/error` 中同步 `followup()` 导致重试死锁未唤醒**：在 `dsh-agent-loop` 中，`throwError()` 触发 `agent/error` 时 agent 仍处在 `"running"` phase 且未 abort，此时同步调用 `followup(retry)` 虽把消息放入 `inbox.nextTurn`，但 `wakeDriver(false)` 因非 idle 且非 abort 不会置 `wakeRequested = true`。随后 turn 抛错结束，`kick()` finally 看到 `wakeRequested === false` 遂直接进入 idle，重试消息永久卡在 inbox 不被执行。现改为 `await agent.whenIdle()` 停稳后再 `followup(retry)`，正确唤醒新一轮纯文本执行（带本地落盘图片路径），用户正常获得回复。
+  3. **双重记忆与切模型重置**：同时按会话 (`imageUnsupportedKeys`) 与模型 (`imageUnsupportedModels`) 记忆非视觉属性；后续发图直接走纯文本落盘路径（避免每张图都走一遍报错重试）；使用 `/model` 切换模型时自动清除会话标记，切回视觉模型时可恢复 ImageBlock。
+- **流式卡片：create 请求体多包一层 `data` 导致 API 拒绝**。官方 `POST /cardkit/v1/cards` 请求体是**扁平**的 `{type:"card_json", data:"<字符串化卡片JSON>"}`（已核对官方文档请求体示例），此前实现包成 `{data:{type,data}}` 必然 4xx → 卡片永远出不来。另新增**一次性失败提示**：卡片创建失败时在聊天里说明原因（缺 CardKit 权限/客户端过旧等），不再静默回退普通消息（内容本来就不丢，现在原因可见）。
+- **/resume 选择卡片可用性 + 友好化**：
+  - 修按钮点击 bug：lark-link 会话 id 满是冒号，卡片回调按**第一个冒号**切 op，`resume:lark-link:dm:…` 被截成 `dm:…` → 永远「未找到会话」。按钮 op 现在传 **URI 编码**的 id，匹配侧解码并保留原始/前缀/后缀三种兜底。
+  - 卡片重做：相对时间（`5 分钟前`/`3 天前`）、preset 徽标、**当前会话列为禁用行**（无编号）、序号只数可恢复行（`/resume <n>` 与卡片编号严格一致）、空态与「新起会话/切工作区」提示、恢复成功回执显示会话起始时间。
+
+### Feature: Feishu-side `/resume` — pick up historical sessions of the current workspace
+
+- `/resume`（无参数）渲染当前会话工作区的历史会话卡片（时间 + 模式 + 可点按钮）；`/resume <序号|id前缀>`（或点按钮）恢复该会话。
+- 列表双通道：优先 `sessionPersistence` 服务头（精确 cwd 过滤、排除 subagent 子会话、带存储 preset），服务不可用时回退文件扫描（`<DSH_HOME>/sessions/<projectKey(cwd)>`，`projectKey` 编码逐字移植自 dsh-session-persistence-jsonl）。
+- 恢复走 DSH 官方 `agents.resume({resumeSessionId})`（factory 内部 `sessionPersistence.prepare`），setup 组装复用 ensureAgent 全链路，并**用会话存储的 preset** 重组（与 GUI resume 的 preset-unchanged 断言一致）。旧 agent rotate 式 detach（不 dispose，GUI 会话行与日志保留）。
+- 新增 `DshSessionBackend.resumeAgent`（memory 后端同步实现），`/resume` 注册为 Tier-1 桥命令（优先于 DSH 自带 /resume 的文本回复）。
+
+### Fix: `/lark-config streaming.enabled=true` 报「不可热改」+ 流式管线从未接线
+
+- **根因 1**：`/lark-config` 只匹配白名单**顶级键**，点路径 `streaming.enabled` 永远进不去 —— 新增 `buildHotReloadPatch()` 解析点路径为嵌套 patch（未知子键/超深层级显式报错）。
+- **根因 2**：即使热改成功，`streamFor().ensureStream` 是返回 `undefined` 的桩，且 `cardkit-stream.ts` 的载荷与官方 CardKit v1 API 不符（无 receive/deliver、缺 element_id、sequence 语义错误）。
+- **修复**：`cardkit-stream.ts` 按官方文档重写 —— `POST /cardkit/v1/cards` 建实体（`config.streaming_mode` + `element_id`）→ `im/v1/messages` 以 `{"type":"card","data":{"card_id"}}` 投递（实体仅可发一次）→ `PUT /cards/:id/elements/:element_id/content` 全量文本打字机 → finalize 先 `PATCH …/settings` 关流再 `PUT /cards/:id` 定稿（失败 re-throw 落回 outbox，内容不丢）；`sequence` 同卡严格递增。lark 客户端新增 5 个 cardkit 方法（经 `sdkClient.request`），index.ts 按会话缓存 handle（同轮复用，disposed 后换新）。
+
+### Fix: Windows 绝对路径被 `/workspace` 与文件工具全量拒绝 (GH #7)
+
+- **根因**：`startsWith("/")` 判绝对路径 —— Windows 盘符（`D:\…`）与 UNC（`\\server\…`）全部被误判为相对路径：`/workspace` 永远回「无效路径」，`lark_send_local_file` 把盘符路径 join 到工作区后再以「路径不在工作区内」拒绝。
+- **修复**：新增 `common/paths.ts` —— `resolveWorkspaceTarget`/`resolveInWorkspacePath` 用 `node:path` 的 `isAbsolute`（外加 win32 形状识别，跨平台兜底）与 `relative()` 做包含性检查；两处调用点已切换。
+
+### Fix: 桥的 permissionMode 不再污染宿主全局权限默认 (GH #8)
+
+- **根因**：启动与每次 `/permission` 都把桥的 `permissionMode` 写进宿主 `settings.permission.defaultPreset`（`@deepseek-ai/dsh-permission-presets` 将其作为**全部署**未来会话的默认），装上插件即静默把整个部署翻成 `danger-full-access`。
+- **修复**（issue 内已验证的三段式）：① 删除 `syncDefaultPermission` 及其全部调用；② `dsh-adapter` 在 create/resume 后对**该会话**应用 `permissionPresets.apply(session, mode, cb → approval.setPolicy)`（新增 `permissionMode` dep）；③ 桥自身默认仍为 full access（仅辖桥会话）。`/permission` 现在只影响桥会话，回执文案注明「仅桥接会话生效」。
+
+### Spec
+
+- `.spec/2026-08-18-feishu-resume-streaming-gh-issues-spec.md` —— 全部变更先 spec 后 TDD（每个修复含复现测试）。
+
+---
+
 ## 0.3.3
 
 ### Fix: GUI model switch no longer leaks into other conversations / workspaces

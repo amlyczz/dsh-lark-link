@@ -52,7 +52,7 @@
 | 🩺 **一键诊断** | `/doctor` → **ZIP 诊断包**（含当前会话完整 DSH session log + 脱敏配置 + ISSUE.md），发回飞书，贴给 AI 即可定位 |
 | ✍️ **Markdown 渲染** | 回复自动检测 markdown → **CardKit 卡片**渲染（标题/列表/代码块/表格），纯文本走文本消息 |
 | 🌊 **可选流式输出** | `/lark-config streaming.enabled=true` 热开 CardKit schema 2.0 流式卡片，逐字打印（默认关，省流量） |
-| 🆕 **会话管理** | `/new` 当前工作区新起会话（不进 Agent）；`/workspace <路径>` 切换工作区（`~` 展开）；重启后会话 id 持久化，**不丢会话行** |
+| 🆕 **会话管理** | `/new` 当前工作区新起会话（不进 Agent）；`/resume` 恢复当前工作区的历史会话（点选/序号/id 前缀，接续历史上下文）；`/workspace <路径>` 切换工作区（`~` 展开，Windows 盘符/UNC 路径可用）；重启后会话 id 持久化，**不丢会话行** |
 | 🖥 **复用 DSH Web GUI** | 桥 Agent = 原生 DSH session，聊天/流式/工具卡/设置全由 GUI 呈现；会话自动归入对应工作区（不再"未分组"）；Web 面板实时显示 Outbox/补发计数 |
 | 👥 **访问控制** | `allowlist` 限定可对话的 open_id 白名单；`groupPolicy` 群聊触发策略（open / mention / keywords / reply）；`denyList` 命令前缀拒绝兜底 |
 | 🔓 **默认 Full access** | 沙箱全访问 + 审批 never，零打扰 |
@@ -81,6 +81,23 @@ dsh plugin --profile web add dsh-lark-link@latest --ignore-scripts
 >
 > **`--profile web`**：指定安装到哪个 profile（web / tui / headless）。`dsh plugin` 是 pnpm 的转发命令，用法为 `dsh plugin --profile <name> <pnpm 参数>`。想让飞书和 GUI 共用 web profile 就保持 `web`。
 
+### 每次发布后：更新到最新版
+
+**不要依赖 `@latest`**：它读的是镜像返回的 `dist-tags.latest` 标签——npmmirror 等镜像的**标签缓存可能没刷新**（版本元数据已同步、tag 还指着旧版），pnpm 看到「已装版本 == tag」就报 *Already up to date*，哪怕新版早就发布了。tag 是镜像说了算，版本号是你说了算。
+
+```bash
+# 1. 绕过标签，直接看官方源的真实版本列表：
+npm view dsh-lark-link versions --registry https://registry.npmjs.org
+
+# 2. 显式版本号安装（最可靠，不依赖镜像标签）：
+dsh plugin --profile web add dsh-lark-link@<新版本号> --ignore-scripts
+
+# 3. 或强制官方源再走 @latest：
+dsh plugin --profile web add dsh-lark-link@latest --ignore-scripts --registry https://registry.npmjs.org
+```
+
+再遇 *Already up to date* 但怀疑有新版：先 `dsh plugin --profile web outdated` 看它认为的版本——outdated 都显示旧版，基本就是镜像标签没刷新，用上面的显式版本号绕开。装完**重启 `dsh web`** 生效。
+
 ```bash
 # 2. 启动 DSH Web GUI
 dsh web
@@ -108,7 +125,7 @@ dsh web
 | ---- | ---- | ---- |
 | 选择类 | `/mode` `/permission` `/model` | **单选按钮卡片**，点选即切换 |
 | 状态类 | `/status` `/sessions` `/help` | 全链路健康（含 Outbox/补发计数）/ 会话列表 / 帮助卡片 |
-| 会话类 | `/new` `/stop` `/workspace <路径>` | 新会话 / 停当前任务 / 切工作区 |
+| 会话类 | `/new` `/resume [序号\|id]` `/stop` `/workspace <路径>` | 新会话 / 恢复历史会话 / 停当前任务 / 切工作区 |
 | 诊断 | `/doctor` | ZIP 诊断包（session log + 配置 + ISSUE.md） |
 | 热改 | `/lark-config key=value` | 热改配置（如 `groupPolicy=open`、`agentPreset=standard`、`streaming.enabled=true`） |
 | DSH 命令 | `/goal` `/compact` 等 | 原生执行，结果回飞书 |
@@ -130,6 +147,8 @@ dsh web
 | `allowlist` | `[]` | open_id 白名单，空 = 所有人可对话 |
 | `denyList` | `[]` | 命令前缀拒绝兜底 |
 | `workspaceRoot` | `` | 桥会话工作区根目录（空 = process.cwd()） |
+| `attachments.retentionHours` | `168` | 入站图片/文件的保留时长（小时，默认 7 天；`0` = 永久保留）。默认存系统临时目录，到期自动清扫 |
+| `attachments.dir` | `` | 入站媒体根目录覆盖（空 = 系统 tmpdir；重启生效） |
 
 > 凭据（appId/appSecret）存放在 DSH credentials 服务，不进配置文件；`/lark setup` 扫码自动写入。
 
@@ -203,7 +222,7 @@ MIT — 自由使用、修改、分发。
 | 🩺 **One-click diagnostics** | `/doctor` → **ZIP bundle** (full DSH session log + sanitized config + ISSUE.md) back to the chat |
 | ✍️ **Markdown rendering** | Replies auto-render as CardKit cards (headings/lists/code/tables); plain text stays plain |
 | 🌊 **Optional streaming** | `/lark-config streaming.enabled=true` hot-enables CardKit schema 2.0 streaming cards (off by default, saves traffic) |
-| 🆕 **Session management** | `/new` opens a fresh session in the current workspace; `/workspace <path>` switches (with `~`); session ids persist across restarts |
+| 🆕 **Session management** | `/new` opens a fresh session; `/resume` picks up a historical session of the current workspace (button/index/id-prefix); `/workspace <path>` switches (with `~`, Windows drive/UNC paths OK); session ids persist across restarts |
 | 🖥 **Reuses DSH Web GUI** | Bridge agents are native DSH sessions; conversations auto-group under their workspace; the web panel shows live Outbox/replay counters |
 | 👥 **Access control** | `allowlist` restricts inbound to specific open_ids; `groupPolicy` (open / mention / keywords / reply); `denyList` command-prefix deny |
 | 🔓 **Full access by default** | Sandbox full access + never-ask approvals |
@@ -223,11 +242,28 @@ Open Feishu, find your bot, send anything — reaction receipt + full reply = en
 
 Install variants: local tarball (`npm pack`, then `dsh plugin --profile web add ./dsh-lark-link-<version>.tgz --ignore-scripts`) or GitHub source (`github:amlyczz/dsh-lark-link`, requires build approval). Upgrade with `dsh plugin --profile web update dsh-lark-link --latest --ignore-scripts`.
 
+### Updating after each release
+
+**Don't rely on `@latest`**: it resolves the mirror's `dist-tags.latest` label — npmmirror-style mirrors can serve a **stale tag** (version metadata synced, tag still pointing at an older release), so pnpm sees *Already up to date* even though a newer version exists. The tag is what the mirror says; the version number is what you say.
+
+```bash
+# 1. See the real version list, bypassing tags:
+npm view dsh-lark-link versions --registry https://registry.npmjs.org
+
+# 2. Install by explicit version (most reliable):
+dsh plugin --profile web add dsh-lark-link@<new-version> --ignore-scripts
+
+# 3. Or force the official registry with @latest:
+dsh plugin --profile web add dsh-lark-link@latest --ignore-scripts --registry https://registry.npmjs.org
+```
+
+Suspicious *Already up to date*? Run `dsh plugin --profile web outdated` first — if it also shows the old version, the mirror tag is stale; use an explicit version. **Restart `dsh web`** after installing.
+
 ## ⌨️ Commands (Feishu side)
 
 - **Selectors** (single-select cards): `/mode` `/permission` `/model`
 - **Status**: `/status` `/sessions` `/help`
-- **Sessions**: `/new` `/stop` `/workspace <path>`
+- **Sessions**: `/new` `/resume [index|id]` `/stop` `/workspace <path>`
 - **Diagnostics**: `/doctor` (ZIP with session log)
 - **Hot reload**: `/lark-config key=value`
 - **DSH commands** run natively: `/goal` `/compact` …
@@ -246,6 +282,8 @@ Install variants: local tarball (`npm pack`, then `dsh plugin --profile web add 
 | `allowlist` | `[]` | open_id allowlist (empty = everyone) |
 | `denyList` | `[]` | command-prefix deny |
 | `workspaceRoot` | `` | workspace root for bridge sessions |
+| `attachments.retentionHours` | `168` | retention (hours) for inbound images/files (default 7 days; `0` = keep forever). Stored under the OS temp dir and swept by age |
+| `attachments.dir` | `` | inbound media root override (empty = OS tmpdir; applies after reload) |
 
 Credentials (appId/appSecret) live in the DSH credentials service, never in config files.
 

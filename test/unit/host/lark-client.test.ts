@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Readable } from "node:stream";
 import {
 	isValidRef,
 	parseCredentials,
@@ -282,4 +283,56 @@ test("lark-client: domain=lark selects SDK Domain.Lark", async () => {
 	// Client/WSClient receive the same opts; Client ctor records nothing here,
 	// but the adapter built without throwing confirms domain selection resolved.
 	assert.ok(fake.wsClient, "constructed with Lark domain");
+});
+
+// ---- downloadResource via the SDK's dedicated messageResource.get (图片 bug) ----
+// The generic request() returns an axios-style response (stream on res.data)
+// and NEVER carries getReadableStream — that wrapper exists only on the
+// dedicated im.messageResource.get API. Real-world symptom: "downloadResource:
+// no stream for img_v3_…" → attachment resolve failed → model got the
+// image_key JSON as text and saw no image.
+
+function fakeSdkWithResource() {
+	const f = fakeSdk();
+	const resourceCalls: Array<Record<string, unknown>> = [];
+	const stream = new Readable({
+		read() {
+			this.push(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+			this.push(null);
+		},
+	});
+	const sdkClient = new (f.sdk.Client as unknown as new () => {
+		im: Record<string, unknown>;
+	})();
+	sdkClient.im.messageResource = {
+		get: async (payload: Record<string, unknown>) => {
+			resourceCalls.push(payload);
+			return { writeFile: async () => "/tmp/x", getReadableStream: () => stream };
+		},
+	};
+	return { ...f, resourceCalls };
+}
+
+test("lark-client: downloadResource uses im.messageResource.get and drains its stream", async () => {
+	const f = fakeSdkWithResource();
+	const client = await buildLarkClient({
+		appId: "a",
+		appSecret: "s",
+		domain: "feishu",
+		sdkLoader: () => f.sdk,
+	});
+	const buf = await client.downloadResource!({
+		messageId: "om_1",
+		fileKey: "img_v3_abc",
+		type: "image",
+	});
+	assert.deepEqual(Buffer.from(buf), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+	assert.equal(f.resourceCalls.length, 1);
+	const payload = f.resourceCalls[0] as {
+		path: Record<string, string>;
+		params: Record<string, string>;
+	};
+	assert.equal(payload.path.message_id, "om_1");
+	assert.equal(payload.path.file_key, "img_v3_abc");
+	assert.equal(payload.params.type, "image");
 });
