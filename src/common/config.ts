@@ -20,7 +20,7 @@ export interface FeishuConfig {
 	/** Streaming: CardKit schema 2.0. Default OFF (省流量 — pi 31dc3c9:
 	 * 每轮输出直发完整回复；需要流式再热改开启). */
 	streaming: {
-		enabled: false;
+		enabled: boolean;
 		printFrequencyMs: number;
 		printStep: number;
 	};
