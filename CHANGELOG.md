@@ -1,6 +1,33 @@
 # Changelog
 
+## 0.5.0
+
+### Feature: 飞书实时任务看板与目标驱动闭环系统 (Task & Goal Dashboard)
+- **任务实时看板卡片 (`buildTaskBoardCard`)**：
+  - 呈现目标横幅、状态徽标（`active` / `paused` / `blocked` / `completed`）、实时进度条（如 `[████████░░░░░░░░] 50% (2/4)`）；
+  - 三态任务清单（待处理 `[ ]`、执行中 `[-]`、已完成 `[x]`）及当前步骤高亮；
+  - 超过 5 项自动折叠，支持原位点击「展开/折叠」无缝切换；
+  - 支持直接在卡片上操作「⏸️ 暂停」、「▶️ 恢复」、「⏹️ 终止」。
+- **目标控制台与向导卡片 (`buildGoalControlCard` / `buildGoalSetupCard`)**：
+  - 升级 `/goal` 为一级桥命令；
+  - 提供 Bugfix（缺陷修复）、Feature Dev（功能开发）、Refactor（架构重构）三大预设模板，一键武装启动；
+  - 支持 `/goal status`、`/goal pause`、`/goal resume`、`/goal cancel`。
+- **Plan 规划评审卡片 (`buildPlanReviewCard`)**：
+  - 结构化展示 Agent 拟定的 Markdown 执行计划；
+  - 底部集成 4 种分支决策交互按钮（「🚀 立即执行」、「✏️ 修订规划」、「🔄 调整目标」、「❌ 取消规划」）。
+- **Session 恢复就绪态势卡片 (`buildSessionResumedCard`)**：
+  - `/resume` 恢复历史会话后自动汇总未完成任务清单；
+  - 提供「▶️ 重新武装 Goal (Re-arm)」快捷动作，实现会话中断与恢复的全流程闭环。
+- **防抖合并更新引擎 (`TaskCardSyncer`)**：
+  - 内置 1500ms Trailing-Edge 防抖合并机制；
+  - 严格单向递增 `sequence` 控制与原位 `updateCard` 刷新，杜绝任务变更频繁刷屏。
+
+### Fix: CardKit 2.0 流式打字机频控加固与单卡打印修复
+- **OpenAPI 频控解耦**：彻底分离前端打字机渲染频率（`printFrequencyMs`）与服务端 OpenAPI REST 推送频率（`minPushIntervalMs: 800ms`），杜绝飞书 `code: 230020, msg: 'This operation triggers the frequency limit, ext=chat rate limit'` 报错。
+- **单卡流式输出保障**：修复网络抖动或频控重试时 Handle 误被 Dispose 进而导致每个 chunk 重复创建并发送新卡片的问题；增加 `inFlight` 互斥锁与指数退避（Backoff），确保单轮输出 100% 在同一张卡片内打字机渲染并定稿。
+
 ## 0.4.1
+
 
 ### Fix: 流式卡片 400 修复 + 降级兜底吞消息修复
 - **CardKit 2.0 请求体规范修复**：移除 `config` 内非法的 `summary` 字段，显式补充 `update_multi: true`，`markdown` 元素内容为空时增加空格占位，解决飞书 API 报错 400 的问题。

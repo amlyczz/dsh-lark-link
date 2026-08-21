@@ -66,7 +66,16 @@ import {
 	button,
 	AGENT_PRESETS,
 	PERMISSION_PRESETS,
+	buildTaskBoardCard,
+	buildGoalControlCard,
+	buildGoalSetupCard,
+	buildPlanReviewCard,
+	buildSessionResumedCard,
 } from "./presentation/cards.ts";
+import type { GoalSnapshotState } from "./common/types.ts";
+import { createTaskCardSyncer, type TaskCardSyncer } from "./outbound/task-card-syncer.ts";
+
+
 import { createAuthSetup, registerAppWithFetch } from "./host/auth-setup.ts";
 import {
 	resolveCredentials,
@@ -551,9 +560,44 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			)
 			.catch(() => undefined);
 	};
+	const taskCardSyncer = createTaskCardSyncer({
+		api: {
+			createCard: async (payload) => {
+				const client = getLarkClient();
+				if (!client?.cardkitCreateCard) return undefined;
+				return await client.cardkitCreateCard(payload);
+			},
+			deliverCard: async (cardId) => {
+				// Handled via deliverCard option
+			},
+			streamText: async (cardId, elementId, body) => {
+				const client = getLarkClient();
+				return client?.cardkitStreamText ? await client.cardkitStreamText(cardId, elementId, body) : {};
+			},
+			patchSettings: async (cardId, body) => {
+				const client = getLarkClient();
+				return client?.cardkitPatchSettings ? await client.cardkitPatchSettings(cardId, body) : {};
+			},
+			updateCard: async (cardId, body) => {
+				const client = getLarkClient();
+				return client?.cardkitUpdateCard ? await client.cardkitUpdateCard(cardId, body) : {};
+			},
+		},
+		routeFor: (key) => routeStore.get(key),
+		deliverCard: async ({ chatId, cardId }) => {
+			const client = getLarkClient();
+			return client?.cardkitDeliverCard ? await client.cardkitDeliverCard({ chatId, cardId }) : {};
+		},
+		debounceMs: 1500,
+		onError: (err) =>
+			logger.warn(`task card syncer error: ${err instanceof Error ? err.message : String(err)}`),
+	});
+
 	const forwarder = createEventForwarder({
 		outbox,
+		taskCardSyncer,
 		routeFor: (key) => routeStore.get(key),
+
 		// Streaming cards stay off (省流量) unless hot-reloaded via
 		// /lark-config streaming.enabled=true; the StreamTarget exists so
 		// turn/end can always mark the trigger message DONE (pi design:
@@ -574,6 +618,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						return undefined; // CardKit unavailable → chunks stay preview-only
 					const existing = streamHandles.get(sessionKey);
 					if (existing && !existing.disposed) return existing;
+					streamHandles.delete(sessionKey);
 					const cfgStream = getCfg().streaming;
 					const handle = createCardKitStream({
 						api: {
@@ -599,14 +644,20 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						},
 						printFrequencyMs: cfgStream.printFrequencyMs,
 						printStep: cfgStream.printStep,
-						onError: (err) =>
-							logger.warn(
-								`cardkit stream error for ${sessionKey}: ${err instanceof Error ? err.message : String(err)}`,
-							),
+						minPushIntervalMs: 800,
+						onError: (err) => {
+							const errStr = String(err);
+							if (!errStr.includes("230020") && !errStr.includes("rate limit")) {
+								logger.warn(
+									`cardkit stream error for ${sessionKey}: ${err instanceof Error ? err.message : String(err)}`,
+								);
+							}
+						},
 					});
 					streamHandles.set(sessionKey, handle);
 					return handle;
 				},
+
 				fallbackText: async (text) => {
 					await outbox.enqueue({
 						dedupeKey: `${sessionKey}:fallback:${Date.now()}`,
@@ -1108,11 +1159,30 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						pick.id,
 						pick.preset ? { preset: pick.preset } : undefined,
 					);
-					await durableReply(
-						name,
-						msg,
-						`已恢复会话（${new Date(pick.createdAt).toLocaleString("zh-CN", { hour12: false })} 开始的对话）\n下一条消息接续历史上下文；此前的会话保留，可随时 /resume 切回。`,
-					);
+					const resumedAgent = bridge.backend?.get(key);
+					const goalsService = (ctx as unknown as { get?(name: string): unknown }).get?.("goals") as {
+						get?(agent: unknown): GoalSnapshotState | undefined;
+					} | undefined;
+					const liveGoal = resumedAgent && goalsService?.get ? goalsService.get(resumedAgent) : undefined;
+					const liveTodos = taskCardSyncer.getState(key)?.todos;
+					if (liveGoal && liveGoal.phase !== "complete") {
+						await sender.sendCard(
+							msg.chatId,
+							buildSessionResumedCard({
+								sessionId: pick.id,
+								workspacePath: wsRoot,
+								preset: pick.preset,
+								goal: liveGoal,
+								todos: liveTodos,
+							}),
+						);
+					} else {
+						await durableReply(
+							name,
+							msg,
+							`已恢复会话（${new Date(pick.createdAt).toLocaleString("zh-CN", { hour12: false })} 开始的对话）\n下一条消息接续历史上下文；此前的会话保留，可随时 /resume 切回。`,
+						);
+					}
 				} catch (err) {
 					await durableReply(
 						name,
@@ -1122,7 +1192,94 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				}
 				return true;
 			}
+			case "goal": {
+				const key = bridge.conversationKeyFor(msg);
+				const wsRoot = convCfg.get(key).workspaceRoot ?? (getCfg().workspaceRoot || process.cwd());
+				const arg = _rawInput.trim();
+				let agent = bridge.backend?.get(key);
+				if (!agent) {
+					try {
+						agent = await bridge.backend?.ensureAgent?.(key);
+					} catch {
+						// fall through
+					}
+				}
+				const goalsService = (ctx as unknown as { get?(name: string): unknown }).get?.("goals") as {
+					get?(agent: unknown): GoalSnapshotState | undefined;
+					create?(agent: unknown, req: { objective: string }): GoalSnapshotState;
+					pause?(agent: unknown, ref: { id: string; revision: number }): GoalSnapshotState;
+					resume?(agent: unknown, ref: { id: string; revision: number }): GoalSnapshotState;
+					clear?(agent: unknown, ref: { id: string; revision: number }): unknown;
+				} | undefined;
+
+				const currentGoal = agent && goalsService?.get ? goalsService.get(agent) : undefined;
+
+				if (!arg) {
+					if (currentGoal) {
+						await sender.sendCard(msg.chatId, buildGoalControlCard(currentGoal, { workspacePath: wsRoot }));
+					} else {
+						await sender.sendCard(msg.chatId, buildGoalSetupCard());
+					}
+					return true;
+				}
+
+				if (arg === "pause") {
+					if (!currentGoal) {
+						await durableReply(name, msg, "当前没有正在运行的目标。");
+						return true;
+					}
+					try {
+						goalsService?.pause?.(agent, { id: currentGoal.id, revision: currentGoal.revision });
+						await durableReply(name, msg, "⏸ 目标已暂停。发送 /goal resume 或点击卡片按钮可恢复执行。");
+					} catch (err) {
+						await durableReply(name, msg, `暂停失败: ${err instanceof Error ? err.message : String(err)}`);
+					}
+					return true;
+				}
+
+				if (arg === "resume") {
+					if (!currentGoal) {
+						await durableReply(name, msg, "当前没有可恢复的目标。");
+						return true;
+					}
+					try {
+						goalsService?.resume?.(agent, { id: currentGoal.id, revision: currentGoal.revision });
+						await durableReply(name, msg, "▶️ 目标已恢复执行。");
+					} catch (err) {
+						await durableReply(name, msg, `恢复失败: ${err instanceof Error ? err.message : String(err)}`);
+					}
+					return true;
+				}
+
+				if (arg === "clear") {
+					if (!currentGoal) {
+						await durableReply(name, msg, "当前没有活跃的目标。");
+						return true;
+					}
+					try {
+						goalsService?.clear?.(agent, { id: currentGoal.id, revision: currentGoal.revision });
+						await bridge.conversations?.stop(key);
+						await durableReply(name, msg, "🛑 目标已清除并停止当前任务轮次。");
+					} catch (err) {
+						await durableReply(name, msg, `清除失败: ${err instanceof Error ? err.message : String(err)}`);
+					}
+					return true;
+				}
+
+				// Custom objective: /goal <objective>
+				try {
+					const created = goalsService?.create?.(agent, { objective: arg });
+					await durableReply(name, msg, `🎯 已启动目标：${arg}\n正在执行任务拆解，请留意后续进度看板...`);
+					if (created) {
+						await taskCardSyncer.updateGoal(key, created, wsRoot);
+					}
+				} catch (err) {
+					await durableReply(name, msg, `目标启动失败: ${err instanceof Error ? err.message : String(err)}`);
+				}
+				return true;
+			}
 			case "stop": {
+
 				const key = bridge.conversationKeyFor(msg);
 				await bridge.conversations?.stop(key);
 				await durableReply(name, msg, "已停止当前会话任务");
@@ -1439,6 +1596,120 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				}
 				return;
 			}
+			if (op === "task:toggle_fold") {
+				const knownRoute = routeStore.all().find((r) => r.chatId === chatId);
+				const sessionKey = knownRoute?.sessionKey ?? (chatId ? `dm:${chatId}` : "");
+				if (sessionKey) {
+					const isFolded = typeof value.folded === "boolean" ? value.folded : undefined;
+					await taskCardSyncer.toggleFold(sessionKey, isFolded);
+				}
+				return;
+			}
+			if (op === "task:focus_board") {
+				const knownRoute = routeStore.all().find((r) => r.chatId === chatId);
+				const sessionKey = knownRoute?.sessionKey ?? (chatId ? `dm:${chatId}` : "");
+				if (sessionKey) {
+					const st = taskCardSyncer.getState(sessionKey);
+					if (st) {
+						await sender.sendCard(chatId, buildTaskBoardCard(st));
+					} else {
+						await sender.sendText(chatId, "当前会话暂无活跃任务看板。");
+					}
+				}
+				return;
+			}
+			if (op.startsWith("plan:approve_goal:")) {
+				const questionId = op.slice("plan:approve_goal:".length);
+				const pending = pendingQuestions.get(questionId);
+				if (pending) {
+					clearTimeout(pending.timer);
+					pendingQuestions.delete(questionId);
+					void sender.sendText(pending.chatId, "已批准方案，正在启动目标并拆解任务看板 🚀").catch(() => undefined);
+					pending.resolve({ id: questionId, selected: ["Approve"] });
+					const knownRoute = routeStore.all().find((r) => r.chatId === chatId);
+					const sessionKey = knownRoute?.sessionKey ?? (chatId ? `dm:${chatId}` : "");
+					const agent = sessionKey ? bridge.backend?.get(sessionKey) : undefined;
+					const goalsService = (ctx as unknown as { get?(name: string): unknown }).get?.("goals") as {
+						create?(agent: unknown, req: { objective: string }): GoalSnapshotState;
+					} | undefined;
+					if (agent && goalsService?.create) {
+						try {
+							const opt = pending.options[0] as { label?: string; description?: string } | undefined;
+							const firstLine = (opt?.description ?? opt?.label ?? "").split("\n")[0] || "执行已批准的规划方案";
+							const goal = goalsService.create(agent, { objective: firstLine });
+							const ws = convCfg.get(sessionKey).workspaceRoot ?? (getCfg().workspaceRoot || process.cwd());
+							await taskCardSyncer.updateGoal(sessionKey, goal, ws);
+						} catch {
+							// ignore
+						}
+					}
+
+				}
+				return;
+			}
+			if (op.startsWith("plan:approve_plain:")) {
+				const questionId = op.slice("plan:approve_plain:".length);
+				const pending = pendingQuestions.get(questionId);
+				if (pending) {
+					clearTimeout(pending.timer);
+					pendingQuestions.delete(questionId);
+					void sender.sendText(pending.chatId, "已批准方案 ✅，退出 Plan 模式继续执行。").catch(() => undefined);
+					pending.resolve({ id: questionId, selected: ["Approve"] });
+				}
+				return;
+			}
+			if (op.startsWith("plan:feedback:")) {
+				const questionId = op.slice("plan:feedback:".length);
+				const pending = pendingQuestions.get(questionId);
+				if (pending) {
+					void sender.sendText(pending.chatId, "请在聊天框直接回复你的修改建议 💬，Agent 将在 Plan 模式下调整方案。").catch(() => undefined);
+				}
+				return;
+			}
+			if (op.startsWith("plan:cancel:")) {
+				const questionId = op.slice("plan:cancel:".length);
+				const pending = pendingQuestions.get(questionId);
+				if (pending) {
+					clearTimeout(pending.timer);
+					pendingQuestions.delete(questionId);
+					void sender.sendText(pending.chatId, "已放弃当前方案 🛑，退出 Plan 模式。").catch(() => undefined);
+					const planModeService = (ctx as unknown as { get?(name: string): unknown }).get?.("planMode") as {
+						set?(agent: unknown, active: boolean): unknown;
+					} | undefined;
+					const knownRoute = routeStore.all().find((r) => r.chatId === chatId);
+					const sessionKey = knownRoute?.sessionKey ?? (chatId ? `dm:${chatId}` : "");
+					const agent = sessionKey ? bridge.backend?.get(sessionKey) : undefined;
+					if (agent && planModeService?.set) {
+						planModeService.set(agent, false);
+					}
+					pending.resolve({ id: questionId, selected: ["Keep planning"] });
+				}
+				return;
+			}
+			if (op.startsWith("goal:tpl:")) {
+				const tpl = op.slice("goal:tpl:".length);
+				const knownRoute = routeStore.all().find((r) => r.chatId === chatId);
+				const sessionKey = knownRoute?.sessionKey ?? (chatId ? `dm:${chatId}` : "");
+				const wsRoot = convCfg.get(sessionKey).workspaceRoot ?? (getCfg().workspaceRoot || process.cwd());
+				let obj = "构建工程并运行全量测试验证";
+				if (tpl === "fix") obj = "诊断并修复当前工程中的已知问题与测试失败";
+				else if (tpl === "refactor") obj = "重构核心模块并补齐单元测试与文档";
+				const agent = sessionKey ? await bridge.backend?.ensureAgent?.(sessionKey) : undefined;
+				const goalsService = (ctx as unknown as { get?(name: string): unknown }).get?.("goals") as {
+					create?(agent: unknown, req: { objective: string }): GoalSnapshotState;
+				} | undefined;
+				try {
+					const created = goalsService?.create?.(agent, { objective: obj });
+					await sender.sendText(chatId, `🎯 已设定目标：${obj}\n正在执行任务拆解，请留意任务看板...`);
+					if (created) {
+						await taskCardSyncer.updateGoal(sessionKey, created, wsRoot);
+					}
+				} catch (err) {
+					await sender.sendText(chatId, `设定目标失败: ${err instanceof Error ? err.message : String(err)}`);
+				}
+				return;
+			}
+
 			const sep = op.indexOf(":");
 			const cmd = sep === -1 ? op : op.slice(0, sep);
 			const arg = sep === -1 ? "" : op.slice(sep + 1);
@@ -1515,6 +1786,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			// progress (text chunks, tool calls/results) refreshes the deadline.
 			if (event.type === "turn/start") {
 				turnDelivered.delete(key);
+				streamHandles.delete(key);
 				turnSupervisor.arm(key);
 			}
 			if (event.type === "assistant/chunk") {
@@ -1533,6 +1805,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			}
 			if (event.type === "turn/end") {
 				turnSupervisor.disarm(key);
+				streamHandles.delete(key);
 				const reason = event.reason;
 				// "aborted" is user cancellation via /stop or supervisor cancel — NOT an unhandled failure.
 				// Do not emit error diagnostic or reset session on "aborted".

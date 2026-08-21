@@ -7,7 +7,7 @@
 // (used by unit tests and by the bridge when DSH services are absent), plus
 // the real adapter implemented against the DSH Cordis ctx in `dsh-adapter.ts`.
 
-import type { FeishuInboundMessage, AgentPresetOption } from "../common/types.ts";
+import type { FeishuInboundMessage, AgentPresetOption, GoalSnapshotState, TodoItemState } from "../common/types.ts";
 
 export interface AttachmentInput {
   /** Local file path (image/file). */
@@ -34,7 +34,9 @@ export type SessionEventOut =
   | { type: "assistant/message"; text: string }
   | { type: "turn/end"; reason: string }
   | { type: "tool/call"; name: string }
-  | { type: "tool/result"; name: string; error?: { name: string; code: string } };
+  | { type: "tool/result"; name: string; error?: { name: string; code: string } }
+  | { type: "todo/write"; todos: TodoItemState[] }
+  | { type: "goal/change"; goal: GoalSnapshotState };
 
 export interface AgentHandle {
   agentId: string;

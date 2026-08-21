@@ -57,7 +57,9 @@ export interface CardKitApi {
 
 export interface CardKitStreamOptions {
   api: CardKitApi;
-  /** ms between server-side typewriter pushes (config at create time). */
+  /** Minimum ms between server-side REST API pushes (default 800ms to stay within Feishu chat rate limit). */
+  minPushIntervalMs?: number;
+  /** ms for client-side typewriter rendering speed in card json (default 120ms). */
   printFrequencyMs?: number;
   /** print_step for the client typewriter (config at create time). */
   printStep?: number;
@@ -90,13 +92,18 @@ export function createCardKitStream(
   let lastPatchAt = 0;
   let patchCount = 0;
   let disposed = false;
+  let inFlight = false;
+  let backoffUntil = 0;
   let acc = ""; // accumulated text — the API takes FULL text every push
   const now = opts.now ?? Date.now;
+  const minInterval = opts.minPushIntervalMs ?? opts.printFrequencyMs ?? 800;
 
   const nextSeq = (): number => {
+
     seq += 1;
     return seq;
   };
+
 
   const cardJson = (text: string, streaming: boolean): string =>
     JSON.stringify({
@@ -145,9 +152,10 @@ export function createCardKitStream(
     },
     async patch(text) {
       if (disposed) return;
-      if (patchCount >= MAX_STREAM_PATCHES) return; // finalize covers the rest
       acc += text;
       if (cardId === undefined) {
+        if (inFlight) return;
+        inFlight = true;
         // First chunk: create the streaming entity AND deliver it — an
         // undelivered entity is invisible to the user.
         try {
@@ -161,12 +169,22 @@ export function createCardKitStream(
           opts.onError?.(err);
           disposed = true;
           return;
+        } finally {
+          inFlight = false;
         }
         return;
       }
-      // Throttle: at most one push per printFrequencyMs.
-      if (now() - lastPatchAt < (opts.printFrequencyMs ?? 120)) return;
-      lastPatchAt = now();
+
+      // Concurrency and rate-limiting gates:
+      if (inFlight) return;
+      if (patchCount >= MAX_STREAM_PATCHES) return; // finalize covers the rest
+
+      const currentTime = now();
+      if (currentTime < backoffUntil) return;
+      if (currentTime - lastPatchAt < minInterval) return;
+
+      inFlight = true;
+      lastPatchAt = currentTime;
       try {
         await opts.api.streamText(cardId, STREAM_ELEMENT_ID, {
           content: acc,
@@ -175,8 +193,14 @@ export function createCardKitStream(
         });
         patchCount++;
       } catch (err) {
+        const errStr = String(err);
+        if (errStr.includes("230020") || errStr.includes("rate limit") || errStr.includes("429")) {
+          backoffUntil = now() + 1500;
+        }
         opts.onError?.(err);
         // Non-fatal: finalize still lands the full content.
+      } finally {
+        inFlight = false;
       }
     },
     async finalize(fullText) {
@@ -184,6 +208,13 @@ export function createCardKitStream(
         if (!cardId) throw new Error("CardKit stream handle was disposed (creation failed)");
         return cardId;
       }
+      // Wait for any inFlight network patch to settle before finalizing
+      let waitCount = 0;
+      while (inFlight && waitCount < 20) {
+        await new Promise((r) => setTimeout(r, 50));
+        waitCount++;
+      }
+
       const text = fullText || acc;
       if (!cardId) {
         // Never streamed a chunk — create a plain (non-streaming) card with
@@ -221,6 +252,24 @@ export function createCardKitStream(
           uuid: randomUUID(),
         });
       } catch (err) {
+        // If update failed with rate limit, wait 600ms and retry once
+        const errStr = String(err);
+        if (errStr.includes("230020") || errStr.includes("rate limit") || errStr.includes("429")) {
+          await new Promise((r) => setTimeout(r, 600));
+          try {
+            await opts.api.updateCard(id, {
+              card: { type: "card_json", data: cardJson(text || " ", false) },
+              sequence: nextSeq(),
+              uuid: randomUUID(),
+            });
+            disposed = true;
+            return id;
+          } catch (retryErr) {
+            opts.onError?.(retryErr);
+            disposed = true;
+            throw retryErr;
+          }
+        }
         opts.onError?.(err);
         disposed = true;
         throw err;
@@ -229,6 +278,7 @@ export function createCardKitStream(
       return id;
     },
   };
+
 }
 
 export { CARD_SCHEMA, STREAM_ELEMENT_ID };

@@ -126,3 +126,51 @@ export interface BridgeStatus {
   wsReady: boolean;
   owner?: { pid: number; host: string; startedAt: number };
 }
+
+/** Lifecycle phase of an agent goal (mirroring @deepseek-ai/dsh-goal). */
+export type GoalPhase = "active" | "paused" | "blocked" | "complete";
+
+/** Goal snapshot state within a bridge session. */
+export interface GoalSnapshotState {
+  id: string;
+  revision: number;
+  objective: string;
+  phase: GoalPhase;
+  roundsStarted: number;
+  maxGoalRounds: number;
+  blockedReason?: {
+    code: string;
+    message: string;
+  };
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+/** Single todo item state (mirroring @deepseek-ai/dsh-tool-todo). */
+export interface TodoItemState {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+/** Full state of the live Task & Goal board card for a session. */
+export interface TaskCardState {
+  sessionKey: string;
+  cardEntityId?: string;
+  sequence: number;
+  goal?: GoalSnapshotState;
+  todos: TodoItemState[];
+  workspacePath?: string;
+  isFolded?: boolean;
+  lastUpdatedAt?: number;
+}
+
+/** Briefing data for an agent session restored via /resume. */
+export interface ResumedSessionBriefing {
+  sessionId: string;
+  workspacePath?: string;
+  preset?: string;
+  goal?: GoalSnapshotState;
+  todos?: TodoItemState[];
+  planActive?: boolean;
+}
+

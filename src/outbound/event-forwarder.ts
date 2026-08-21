@@ -7,9 +7,10 @@
 // Harness-agnostic: receives normalized DSH events through an injected
 // subscribe function so this module stays unit-testable without DSH.
 
-import type { Route, RouteRef } from "../common/types.ts";
+import type { GoalSnapshotState, Route, RouteRef, TodoItemState } from "../common/types.ts";
 import type { Outbox } from "./outbox.ts";
 import type { CardKitStreamHandle } from "./cardkit-stream.ts";
+import type { TaskCardSyncer } from "./task-card-syncer.ts";
 
 /** A normalized slice of the DSH session event surface we care about. */
 export type BridgeSessionEvent =
@@ -18,7 +19,9 @@ export type BridgeSessionEvent =
   | { type: "assistant/message"; text: string }
   | { type: "turn/end"; reason: string }
   | { type: "tool/call"; name: string }
-  | { type: "tool/result"; name: string; error?: { name: string; code: string } };
+  | { type: "tool/result"; name: string; error?: { name: string; code: string } }
+  | { type: "todo/write"; todos: TodoItemState[] }
+  | { type: "goal/change"; goal: GoalSnapshotState };
 
 export interface StreamTarget {
   route: RouteRef;
@@ -36,6 +39,8 @@ export interface ForwarderConfig {
 
 export interface EventForwarderDeps {
   outbox: Outbox;
+  /** Live task and goal board card syncer (optional). */
+  taskCardSyncer?: TaskCardSyncer;
   /** Map a session event to the Feishu route it belongs to. */
   routeFor(sessionKey: string): Route | undefined;
   /** Live streaming target per session (volatile). */
@@ -50,6 +55,7 @@ export interface EventForwarderDeps {
    */
   onDelivered?(sessionKey: string): void;
 }
+
 
 export interface EventForwarder {
   /** Feed one normalized DSH session event for a session key. */
@@ -100,6 +106,7 @@ export function createEventForwarder(deps: EventForwarderDeps): EventForwarder {
         st.hasOutput = false;
         st.doneIssued = false;
         st.acc = "";
+        st.stream = undefined;
         break;
       case "assistant/chunk": {
         // Streaming is volatile preview only (ADR-8); the durable per-turn
@@ -108,11 +115,16 @@ export function createEventForwarder(deps: EventForwarderDeps): EventForwarder {
         const { streamingEnabled } = deps.cfg();
         if (!streamingEnabled) return;
         st.acc += event.text;
-        const stream = deps.streamFor(sessionKey)?.ensureStream();
-        if (stream) st.stream = stream;
-        if (st.stream) await st.stream.patch(event.text);
+        if (!st.stream || st.stream.disposed) {
+          const stream = deps.streamFor(sessionKey)?.ensureStream();
+          if (stream && !stream.disposed) st.stream = stream;
+        }
+        if (st.stream && !st.stream.disposed) {
+          await st.stream.patch(event.text);
+        }
         break;
       }
+
       case "assistant/message": {
         // Each complete assistant output is delivered as ONE Feishu message
         // (pi bdbc0a2: 每轮输出逐条发, turn_end 不再重复发最终). Empty output
@@ -170,8 +182,19 @@ export function createEventForwarder(deps: EventForwarderDeps): EventForwarder {
       case "tool/result":
         // Tool activity stays in the DSH GUI (no per-tool Feishu messages).
         break;
+      case "todo/write":
+        if (deps.taskCardSyncer) {
+          await deps.taskCardSyncer.updateTodos(sessionKey, event.todos);
+        }
+        break;
+      case "goal/change":
+        if (deps.taskCardSyncer) {
+          await deps.taskCardSyncer.updateGoal(sessionKey, event.goal);
+        }
+        break;
     }
   }
+
 
   async function finalizeSession(sessionKey: string): Promise<void> {
     const st = state.get(sessionKey);

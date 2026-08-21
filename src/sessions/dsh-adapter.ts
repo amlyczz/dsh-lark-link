@@ -127,34 +127,76 @@ function textOf(
 }
 
 function toSessionEventOut(ev: SessionEvent): SessionEventOut | undefined {
-	switch (ev.type) {
+	const raw = ev as unknown as { type: string; data?: any };
+	switch (raw.type) {
 		case "turn/start":
 			return { type: "turn/start" };
 		case "assistant/chunk": {
-			const c = ev.data.chunk;
-			if (c.type === "text-delta")
+			const c = raw.data?.chunk;
+			if (c?.type === "text-delta")
 				return { type: "assistant/chunk", text: c.text };
 			return undefined;
 		}
 		case "assistant/message":
 			return {
 				type: "assistant/message",
-				text: textOf(ev.data.message.content),
+				text: textOf(raw.data?.message?.content),
 			};
 		case "turn/end":
-			return { type: "turn/end", reason: ev.data.reason.kind };
+			return { type: "turn/end", reason: raw.data?.reason?.kind ?? "done" };
 		case "tool/call":
-			return { type: "tool/call", name: ev.data.name };
+			return { type: "tool/call", name: raw.data?.name };
 		case "tool/result":
 			return {
 				type: "tool/result",
-				name: ev.data.message.content?.[0]?.type ?? "?",
-				error: ev.data.error,
+				name: raw.data?.message?.content?.[0]?.type ?? "?",
+				error: raw.data?.error,
 			};
+		case "todo/write": {
+			const d = raw.data as { todos?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }> };
+			if (Array.isArray(d?.todos)) {
+				return { type: "todo/write", todos: d.todos };
+			}
+			return undefined;
+		}
+		case "goal/change": {
+			const d = raw.data as {
+				id?: string;
+				revision?: number;
+				objective?: string;
+				phase?: "active" | "paused" | "blocked" | "complete";
+				roundsStarted?: number;
+				maxGoalRounds?: number;
+				blockedReason?: { code: string; message: string };
+				createdAt?: number;
+				updatedAt?: number;
+				snapshot?: Record<string, unknown>;
+			};
+			const g = d?.snapshot ?? d;
+			if (g && typeof g.id === "string" && typeof g.objective === "string") {
+				return {
+					type: "goal/change",
+					goal: {
+						id: g.id as string,
+						revision: typeof g.revision === "number" ? g.revision : 1,
+						objective: g.objective as string,
+						phase: (g.phase as "active" | "paused" | "blocked" | "complete") || "active",
+						roundsStarted: typeof g.roundsStarted === "number" ? g.roundsStarted : 0,
+						maxGoalRounds: typeof g.maxGoalRounds === "number" ? g.maxGoalRounds : 256,
+						blockedReason: g.blockedReason as { code: string; message: string } | undefined,
+						createdAt: typeof g.createdAt === "number" ? g.createdAt : Date.now(),
+						updatedAt: typeof g.updatedAt === "number" ? g.updatedAt : Date.now(),
+					},
+				};
+			}
+			return undefined;
+		}
 		default:
 			return undefined;
 	}
 }
+
+
 
 export function isImageUnsupportedError(
 	errText: string,

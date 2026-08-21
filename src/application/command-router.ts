@@ -55,7 +55,10 @@ const BRIDGE_COMMANDS = new Set([
 	// Feishu-side history picker — Tier 1 wins over DSH's own /resume so the
 	// workspace-session card renders instead of a bare text reply.
 	"resume",
+	// Feishu-side goal controller — Tier 1 renders interactive goal deck / templates.
+	"goal",
 ]);
+
 
 export function stripLeadingMentions(text: string): string {
 	let cur = text.trim();
