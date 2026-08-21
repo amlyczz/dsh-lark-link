@@ -141,41 +141,18 @@ test("task-cards: buildPlanReviewCard renders review actions", () => {
 	assert.ok(card.body.elements.some((e) => e.content?.includes("Architecture Plan")));
 });
 
-test("task-cards: buildSessionResumedCard renders resumed status and quick rearm button", () => {
+test("task-cards: buildSessionResumedCard renders clean resume card", () => {
 	const card = buildSessionResumedCard({
 		sessionId: "s_123",
 		workspacePath: "/project/app",
-		goal: {
-			id: "gid_1",
-			revision: 1,
-			objective: "Resume firmware build",
-			phase: "active",
-			roundsStarted: 5,
-			maxGoalRounds: 256,
-		},
-		todos: [
-			{ content: "Step 1", status: "completed" },
-			{ content: "Step 2", status: "in_progress" },
-		],
-	}) as {
-		header: { template: string };
-		body: { elements: Array<{ content?: string; tag?: string }> };
-	};
-	assert.equal(card.header.template, "blue");
-	assert.ok(card.body.elements.some((e) => e.content?.includes("Resume firmware build")));
-	assert.ok(card.body.elements.some((e) => e.content?.includes("Step 1")));
-});
-
-test("task-cards: buildSessionResumedCard renders clean message without buttons when no active goal exists", () => {
-	const card = buildSessionResumedCard({
-		sessionId: "s_456",
-		workspacePath: "/project/app",
+		preset: "code",
 	}) as {
 		header: { template: string };
 		body: { elements: Array<{ content?: string; tag?: string }> };
 	};
 	assert.equal(card.header.template, "blue");
 	assert.ok(card.body.elements.some((e) => e.content?.includes("会话已恢复")));
+	assert.ok(card.body.elements.some((e) => e.content?.includes("/project/app")));
 	const json = JSON.stringify(card);
 	assert.ok(!json.includes("设定新目标"));
 	assert.ok(!json.includes("构建与测试"));

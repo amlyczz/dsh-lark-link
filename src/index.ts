@@ -1217,74 +1217,12 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					);
 					const resumedHandle = bridge.backend?.get(key);
 					const rawAgent = resolveRawAgent(resumedHandle);
-					const goalsService = (ctx as unknown as { get?(name: string): unknown }).get?.("goals") as {
-						get?(agent: unknown): GoalSnapshotState | undefined;
-					} | undefined;
-					let liveGoal: GoalSnapshotState | undefined;
-					try {
-						liveGoal = rawAgent && goalsService?.get ? goalsService.get(rawAgent) : undefined;
-					} catch {
-						liveGoal = undefined;
-					}
-					let liveTodos = taskCardSyncer.getState(key)?.todos;
-					const events = (rawAgent as { session?: { events?: readonly unknown[] } })?.session?.events;
-					if (Array.isArray(events)) {
-						if (!liveGoal) {
-							for (let i = events.length - 1; i >= 0; i--) {
-								const ev = events[i] as {
-									type?: string;
-									data?: {
-										goal?: GoalSnapshotState;
-										operation?: string;
-										roundsStarted?: number;
-									};
-								};
-								if (ev?.type === "goal/change") {
-									if (ev.data?.operation === "clear") {
-										liveGoal = undefined;
-										break;
-									}
-									if (ev.data?.goal) {
-										liveGoal = {
-											...ev.data.goal,
-											roundsStarted:
-												ev.data.roundsStarted ??
-												ev.data.goal.roundsStarted ??
-												0,
-										};
-										break;
-									}
-								}
-							}
-						}
-						if (!liveTodos || liveTodos.length === 0) {
-							for (let i = events.length - 1; i >= 0; i--) {
-								const ev = events[i] as { type?: string; data?: { todos?: TodoItemState[] } };
-								if (ev?.type === "todo/write" && Array.isArray(ev.data?.todos)) {
-									liveTodos = ev.data.todos;
-									break;
-								}
-							}
-						}
-					}
-
-					if (liveGoal) {
-						await taskCardSyncer.updateGoal(key, liveGoal, wsRoot);
-					} else {
-						taskCardSyncer.disposeSession(key);
-					}
-					if (liveTodos && liveTodos.length > 0) {
-						await taskCardSyncer.updateTodos(key, liveTodos, wsRoot);
-					}
-
 					await sender.sendCard(
 						msg.chatId,
 						buildSessionResumedCard({
 							sessionId: pick.id,
 							workspacePath: wsRoot,
 							preset: pick.preset,
-							goal: liveGoal,
-							todos: liveTodos,
 						}),
 					);
 
@@ -1300,7 +1238,6 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			case "goal": {
 				const key = bridge.conversationKeyFor(msg);
 
-				const wsRoot = convCfg.get(key).workspaceRoot ?? (getCfg().workspaceRoot || process.cwd());
 				const arg = _rawInput.trim();
 				let agentHandle = bridge.backend?.get(key);
 				if (!agentHandle) {
@@ -1328,9 +1265,20 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 
 				if (!arg) {
 					if (currentGoal) {
-						await sender.sendCard(msg.chatId, buildGoalControlCard(currentGoal, { workspacePath: wsRoot }));
+						let phaseLabel = "已暂停";
+						if (currentGoal.phase === "active") phaseLabel = "执行中";
+						else if (currentGoal.phase === "complete") phaseLabel = "已完成";
+						await durableReply(
+							name,
+							msg,
+							`🎯 当前目标 (${phaseLabel})：${currentGoal.objective}\n🔄 轮次：${currentGoal.roundsStarted}/${currentGoal.maxGoalRounds}\n💡 可发送 /goal pause 暂停、/goal resume 恢复、/goal clear 清除。`,
+						);
 					} else {
-						await sender.sendCard(msg.chatId, buildGoalSetupCard());
+						await durableReply(
+							name,
+							msg,
+							"🎯 **目标模式 (/goal)**：发送 `/goal <任务目标>` 即可启动目标长任务。\n\n常用命令：\n- `/goal <目标描述>`：设定新目标并开始自主执行\n- `/goal pause`：暂停当前目标\n- `/goal resume`：恢复执行目标\n- `/goal clear`：清除当前目标",
+						);
 					}
 					return true;
 				}
@@ -1342,7 +1290,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					}
 					try {
 						goalsService?.pause?.(rawAgent, { id: currentGoal.id, revision: currentGoal.revision });
-						await durableReply(name, msg, "⏸ 目标已暂停。发送 /goal resume 或点击卡片按钮可恢复执行。");
+						await durableReply(name, msg, "⏸ 目标已暂停。发送 /goal resume 可恢复执行。");
 					} catch (err) {
 						await durableReply(name, msg, `暂停失败: ${err instanceof Error ? err.message : String(err)}`);
 					}
@@ -1380,11 +1328,8 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 
 				// Custom objective: /goal <objective>
 				try {
-					const created = goalsService?.create?.(rawAgent, { objective: arg });
-					await durableReply(name, msg, `🎯 已启动目标：${arg}\n正在执行任务拆解，请留意后续进度看板...`);
-					if (created) {
-						await taskCardSyncer.updateGoal(key, created, wsRoot);
-					}
+					goalsService?.create?.(rawAgent, { objective: arg });
+					await durableReply(name, msg, `🎯 已启动目标：${arg}\nAgent 将围绕该目标自主执行。`);
 				} catch (err) {
 					await durableReply(name, msg, `目标启动失败: ${err instanceof Error ? err.message : String(err)}`);
 				}
@@ -1737,7 +1682,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				if (pending) {
 					clearTimeout(pending.timer);
 					pendingQuestions.delete(questionId);
-					void sender.sendText(pending.chatId, "已批准方案，正在启动目标并拆解任务看板 🚀").catch(() => undefined);
+					void sender.sendText(pending.chatId, "已批准方案，正在启动目标执行 🚀").catch(() => undefined);
 					pending.resolve({ id: questionId, selected: ["Approve"] });
 					const knownRoute = routeStore.all().find((r) => r.chatId === chatId);
 					const sessionKey = knownRoute?.sessionKey ?? (chatId ? `dm:${chatId}` : "");
@@ -1750,14 +1695,11 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						try {
 							const opt = pending.options[0] as { label?: string; description?: string } | undefined;
 							const firstLine = (opt?.description ?? opt?.label ?? "").split("\n")[0] || "执行已批准的规划方案";
-							const goal = goalsService.create(rawAgent, { objective: firstLine });
-							const ws = convCfg.get(sessionKey).workspaceRoot ?? (getCfg().workspaceRoot || process.cwd());
-							await taskCardSyncer.updateGoal(sessionKey, goal, ws);
+							goalsService.create(rawAgent, { objective: firstLine });
 						} catch {
 							// ignore
 						}
 					}
-
 				}
 				return;
 			}
@@ -1826,11 +1768,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					create?(agent: unknown, req: { objective: string }): GoalSnapshotState;
 				} | undefined;
 				try {
-					const created = rawAgent && goalsService?.create ? goalsService.create(rawAgent, { objective: obj }) : undefined;
-					await sender.sendText(chatId, `🎯 已设定目标：${obj}\n正在执行任务拆解，请留意任务看板...`);
-					if (created) {
-						await taskCardSyncer.updateGoal(sessionKey, created, wsRoot);
+					if (rawAgent && goalsService?.create) {
+						goalsService.create(rawAgent, { objective: obj });
 					}
+					await sender.sendText(chatId, `🎯 已设定目标：${obj}\nAgent 将围绕该目标自主执行。`);
 				} catch (err) {
 					await sender.sendText(chatId, `设定目标失败: ${err instanceof Error ? err.message : String(err)}`);
 				}

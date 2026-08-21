@@ -465,90 +465,11 @@ export function buildSessionResumedCard(briefing: ResumedSessionBriefing): unkno
 			tag: "markdown",
 			content: `**工作区**: \`${briefing.workspacePath ?? "默认"}\`${briefing.preset ? ` · **模式**: \`${briefing.preset}\`` : ""}`,
 		},
-	];
-
-	if (briefing.goal) {
-		let phaseLabel = "已暂停 (待恢复)";
-		if (briefing.goal.phase === "active") phaseLabel = "活跃中 (需恢复武装)";
-		else if (briefing.goal.phase === "complete") phaseLabel = "已完成";
-
-		elements.push({
-			tag: "markdown",
-			content: [
-				`🎯 **历史未完成目标** (${phaseLabel}):`,
-				`${briefing.goal.objective}`,
-				`🔄 轮次: \`${briefing.goal.roundsStarted}\` / ${briefing.goal.maxGoalRounds}`,
-			].join("\n"),
-		});
-	}
-
-	if (briefing.todos && briefing.todos.length > 0) {
-		const total = briefing.todos.length;
-		const comp = briefing.todos.filter((t) => t.status === "completed").length;
-		const inProg = briefing.todos.filter((t) => t.status === "in_progress").length;
-		const pend = briefing.todos.filter((t) => t.status === "pending").length;
-
-		elements.push({
-			tag: "markdown",
-			content: [
-				`📊 **任务进度**: ${renderProgressBar(comp, total)}`,
-				`⚡ ${inProg} 进行中 · ⏳ ${pend} 待处理 · ✅ ${comp} 已完成`,
-				"",
-				formatTodoList(briefing.todos, true, 3),
-			].join("\n"),
-		});
-	}
-
-
-	if (briefing.goal && briefing.goal.phase !== "complete") {
-		elements.push({ tag: "hr" });
-
-		const actionCols: unknown[] = [
-			{
-				tag: "column",
-				width: "weighted",
-				weight: 1,
-				elements: [
-					button("▶️ 一键继续执行原目标", {
-						op: "goal:resume",
-						goalId: briefing.goal.id,
-						revision: briefing.goal.revision,
-					}, "primary"),
-				],
-			},
-			{
-				tag: "column",
-				width: "weighted",
-				weight: 1,
-				elements: [
-					button("📋 唤起任务看板", { op: "task:focus_board" }),
-				],
-			},
-			{
-				tag: "column",
-				width: "weighted",
-				weight: 1,
-				elements: [
-					button("🛑 清除原目标", {
-						op: "goal:clear",
-						goalId: briefing.goal.id,
-						revision: briefing.goal.revision,
-					}),
-				],
-			},
-		];
-
-		elements.push({
-			tag: "column_set",
-			flex_mode: "flow",
-			columns: actionCols,
-		});
-	} else {
-		elements.push({
+		{
 			tag: "markdown",
 			content: "💡 **会话已恢复**，直接发送消息即可继续对话。",
-		});
-	}
+		},
+	];
 
 	return {
 		schema: "2.0",

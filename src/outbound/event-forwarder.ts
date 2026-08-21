@@ -181,16 +181,9 @@ export function createEventForwarder(deps: EventForwarderDeps): EventForwarder {
       case "tool/call":
       case "tool/result":
         // Tool activity stays in the DSH GUI (no per-tool Feishu messages).
-        break;
       case "todo/write":
-        if (deps.taskCardSyncer) {
-          await deps.taskCardSyncer.updateTodos(sessionKey, event.todos);
-        }
-        break;
       case "goal/change":
-        if (deps.taskCardSyncer) {
-          await deps.taskCardSyncer.updateGoal(sessionKey, event.goal);
-        }
+        // Internal DSH state updates (not sent as Feishu task cards).
         break;
     }
   }
