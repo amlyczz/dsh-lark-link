@@ -166,7 +166,7 @@ test("task-cards: buildSessionResumedCard renders resumed status and quick rearm
 	assert.ok(card.body.elements.some((e) => e.content?.includes("Step 1")));
 });
 
-test("task-cards: buildSessionResumedCard renders goal setup options when no active goal exists", () => {
+test("task-cards: buildSessionResumedCard renders clean message without buttons when no active goal exists", () => {
 	const card = buildSessionResumedCard({
 		sessionId: "s_456",
 		workspacePath: "/project/app",
@@ -177,7 +177,7 @@ test("task-cards: buildSessionResumedCard renders goal setup options when no act
 	assert.equal(card.header.template, "blue");
 	assert.ok(card.body.elements.some((e) => e.content?.includes("会话已恢复")));
 	const json = JSON.stringify(card);
-	assert.ok(json.includes("设定新目标"));
-	assert.ok(json.includes("构建与测试"));
+	assert.ok(!json.includes("设定新目标"));
+	assert.ok(!json.includes("构建与测试"));
 });
 

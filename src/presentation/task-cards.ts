@@ -500,44 +500,43 @@ export function buildSessionResumedCard(briefing: ResumedSessionBriefing): unkno
 	}
 
 
-	elements.push({ tag: "hr" });
-
-	const actionCols: unknown[] = [];
 	if (briefing.goal && briefing.goal.phase !== "complete") {
-		actionCols.push({
-			tag: "column",
-			width: "weighted",
-			weight: 1,
-			elements: [
-				button("▶️ 一键继续执行原目标", {
-					op: "goal:resume",
-					goalId: briefing.goal.id,
-					revision: briefing.goal.revision,
-				}, "primary"),
-			],
-		});
+		elements.push({ tag: "hr" });
 
-		actionCols.push({
-			tag: "column",
-			width: "weighted",
-			weight: 1,
-			elements: [
-				button("📋 唤起任务看板", { op: "task:focus_board" }),
-			],
-		});
-
-		actionCols.push({
-			tag: "column",
-			width: "weighted",
-			weight: 1,
-			elements: [
-				button("🛑 清除原目标", {
-					op: "goal:clear",
-					goalId: briefing.goal.id,
-					revision: briefing.goal.revision,
-				}),
-			],
-		});
+		const actionCols: unknown[] = [
+			{
+				tag: "column",
+				width: "weighted",
+				weight: 1,
+				elements: [
+					button("▶️ 一键继续执行原目标", {
+						op: "goal:resume",
+						goalId: briefing.goal.id,
+						revision: briefing.goal.revision,
+					}, "primary"),
+				],
+			},
+			{
+				tag: "column",
+				width: "weighted",
+				weight: 1,
+				elements: [
+					button("📋 唤起任务看板", { op: "task:focus_board" }),
+				],
+			},
+			{
+				tag: "column",
+				width: "weighted",
+				weight: 1,
+				elements: [
+					button("🛑 清除原目标", {
+						op: "goal:clear",
+						goalId: briefing.goal.id,
+						revision: briefing.goal.revision,
+					}),
+				],
+			},
+		];
 
 		elements.push({
 			tag: "column_set",
@@ -547,34 +546,7 @@ export function buildSessionResumedCard(briefing: ResumedSessionBriefing): unkno
 	} else {
 		elements.push({
 			tag: "markdown",
-			content: "💡 **会话已恢复**，直接发消息即可接续上下文；或点击下方按钮快速设定长任务目标：",
-		});
-
-		elements.push(button("🎯 设定新目标 (/goal)", { op: "goal" }, "primary"));
-
-		elements.push({
-			tag: "column_set",
-			flex_mode: "flow",
-			columns: [
-				{
-					tag: "column",
-					width: "weighted",
-					weight: 1,
-					elements: [button("🛠️ 构建与测试", { op: "goal:tpl:build" })],
-				},
-				{
-					tag: "column",
-					width: "weighted",
-					weight: 1,
-					elements: [button("🐞 诊断与修复", { op: "goal:tpl:fix" })],
-				},
-				{
-					tag: "column",
-					width: "weighted",
-					weight: 1,
-					elements: [button("📋 任务看板", { op: "task:focus_board" })],
-				},
-			],
+			content: "💡 **会话已恢复**，直接发送消息即可继续对话。",
 		});
 	}
 

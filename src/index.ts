@@ -1226,16 +1226,34 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					} catch {
 						liveGoal = undefined;
 					}
-
 					let liveTodos = taskCardSyncer.getState(key)?.todos;
 					const events = (rawAgent as { session?: { events?: readonly unknown[] } })?.session?.events;
 					if (Array.isArray(events)) {
 						if (!liveGoal) {
 							for (let i = events.length - 1; i >= 0; i--) {
-								const ev = events[i] as { type?: string; data?: { goal?: GoalSnapshotState } };
-								if (ev?.type === "goal/change" && ev.data?.goal) {
-									liveGoal = ev.data.goal;
-									break;
+								const ev = events[i] as {
+									type?: string;
+									data?: {
+										goal?: GoalSnapshotState;
+										operation?: string;
+										roundsStarted?: number;
+									};
+								};
+								if (ev?.type === "goal/change") {
+									if (ev.data?.operation === "clear") {
+										liveGoal = undefined;
+										break;
+									}
+									if (ev.data?.goal) {
+										liveGoal = {
+											...ev.data.goal,
+											roundsStarted:
+												ev.data.roundsStarted ??
+												ev.data.goal.roundsStarted ??
+												0,
+										};
+										break;
+									}
 								}
 							}
 						}
@@ -1252,6 +1270,8 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 
 					if (liveGoal) {
 						await taskCardSyncer.updateGoal(key, liveGoal, wsRoot);
+					} else {
+						taskCardSyncer.disposeSession(key);
 					}
 					if (liveTodos && liveTodos.length > 0) {
 						await taskCardSyncer.updateTodos(key, liveTodos, wsRoot);
