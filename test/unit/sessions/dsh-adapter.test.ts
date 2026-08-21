@@ -103,12 +103,18 @@ function fakeRegistry(
 					return () => listeners.delete(() => {});
 				},
 				emit(event: string, ev: unknown) {
-					if (event === "session/event") for (const fn of listeners) fn(ev);
+					if (event === "session/event") {
+						for (const fn of listeners) fn(ev);
+						if (agentCtxHolder.ctx?.emit) {
+							agentCtxHolder.ctx.emit("session/event", agent.session, ev);
+						}
+					}
 				},
 			},
 		};
 		return agent;
 	};
+	const agentCtxHolder: { ctx?: { emit?(event: string, session: unknown, ev: unknown): void } } = {};
 	// The real AgentFactory awaits opts.setup(agentCtx) before the handle
 	// resolves — honor that contract so setup composition stays observable.
 	const runSetup = async (setup: unknown) => {
@@ -121,6 +127,7 @@ function fakeRegistry(
 		created,
 		resumed,
 		agents,
+		agentCtxHolder,
 		async create(createOpts: { sessionId: string; setup?: unknown }) {
 			if (agents.has(createOpts.sessionId)) {
 				throw new Error(`session "${createOpts.sessionId}" already exists`);
@@ -152,23 +159,43 @@ function fakeRegistry(
 			return agents.get(id);
 		},
 	};
-	return { ...registry, created, resumed };
+	return { ...registry, created, resumed, agentCtxHolder };
 }
 
 const ctxOf = (
 	registry: ReturnType<typeof fakeRegistry>,
 	agentDefaultModel?: unknown,
 	agentPresets?: unknown,
-) =>
-	({
+) => {
+	const sessionListeners = new Set<(sess: unknown, ev: unknown) => void>();
+	const ctxObj = {
 		agents: registry,
+		on(event: string, fn: (s: unknown, ev: unknown) => void) {
+			if (event === "session/event") {
+				sessionListeners.add(fn);
+				return () => sessionListeners.delete(fn);
+			}
+			return () => {};
+		},
+		emit(event: string, sess: unknown, ev: unknown) {
+			if (event === "session/event") {
+				for (const fn of sessionListeners) fn(sess, ev);
+			}
+		},
 		// Cordis proxy surface — services are read via ctx.get(), not props.
 		get(name: string) {
 			if (name === "agentDefaultModel") return agentDefaultModel;
 			if (name === "agentPresets") return agentPresets;
 			return undefined;
 		},
-	}) as unknown as Parameters<typeof createDshAdapter>[0]["ctx"];
+	};
+	if (registry?.agentCtxHolder) {
+		registry.agentCtxHolder.ctx = ctxObj;
+	}
+	return ctxObj as unknown as Parameters<typeof createDshAdapter>[0]["ctx"];
+
+};
+
 
 function mkBackend(
 	ctx: unknown,
@@ -294,7 +321,64 @@ test("adapter: assistant/message text is extracted from content blocks", async (
 	assert.equal(msg.text, "hi there");
 });
 
+test("adapter: todo/write and goal/change events are correctly forwarded to bridge listeners", async () => {
+	const registry = fakeRegistry();
+	const backend = mkBackend(ctxOf(registry, undefined));
+	const handle = await backend.ensureAgent("dm:ou_user_1");
+	const events: Array<{ type: string; todos?: unknown; goal?: unknown }> = [];
+	handle.onEvent((e) => events.push(e));
+
+	const agent = registry.agents.get(handle.sessionId) as {
+		ctx: { emit(event: string, ev: unknown): void };
+	};
+
+	// 1. Emitting todo/write
+	agent.ctx.emit("session/event", {
+		type: "todo/write",
+		seq: 2,
+		time: Date.now(),
+		data: {
+			todos: [
+				{ content: "Task 1", status: "completed" },
+				{ content: "Task 2", status: "in_progress" },
+			],
+		},
+	});
+
+	const todoEv = events.find((e) => e.type === "todo/write");
+	assert.ok(todoEv, "todo/write forwarded");
+	assert.deepEqual(todoEv.todos, [
+		{ content: "Task 1", status: "completed" },
+		{ content: "Task 2", status: "in_progress" },
+	]);
+
+	// 2. Emitting goal/change from dsh-goal structure (data.goal)
+	agent.ctx.emit("session/event", {
+		type: "goal/change",
+		seq: 3,
+		time: Date.now(),
+		data: {
+			kind: "goal/change",
+			operation: "create",
+			goal: {
+				id: "g_123",
+				revision: 1,
+				objective: "Deploy service",
+				phase: "active",
+				maxGoalRounds: 50,
+			},
+			roundsStarted: 2,
+		},
+	});
+
+	const goalEv = events.find((e) => e.type === "goal/change");
+	assert.ok(goalEv, "goal/change forwarded");
+	assert.equal((goalEv.goal as { objective?: string })?.objective, "Deploy service");
+	assert.equal((goalEv.goal as { roundsStarted?: number })?.roundsStarted, 2);
+});
+
 test("adapter: activeSessionId persists across dsh restart and is resumed", async () => {
+
 	const registry = fakeRegistry();
 	const ctx = ctxOf(registry, undefined);
 	const activeSessions = new Map<string, string | undefined>();

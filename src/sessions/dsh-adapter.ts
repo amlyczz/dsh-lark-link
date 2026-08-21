@@ -157,35 +157,53 @@ function toSessionEventOut(ev: SessionEvent): SessionEventOut | undefined {
 			if (Array.isArray(d?.todos)) {
 				return { type: "todo/write", todos: d.todos };
 			}
+			if (Array.isArray(raw.data)) {
+				return { type: "todo/write", todos: raw.data as Array<{ content: string; status: "pending" | "in_progress" | "completed" }> };
+			}
 			return undefined;
 		}
 		case "goal/change": {
 			const d = raw.data as {
-				id?: string;
-				revision?: number;
-				objective?: string;
-				phase?: "active" | "paused" | "blocked" | "complete";
+				goal?: Record<string, unknown>;
+				cleared?: { id: string; revision: number };
+				operation?: string;
 				roundsStarted?: number;
-				maxGoalRounds?: number;
-				blockedReason?: { code: string; message: string };
 				createdAt?: number;
 				updatedAt?: number;
-				snapshot?: Record<string, unknown>;
+				id?: string;
+				objective?: string;
+				phase?: string;
+				[key: string]: unknown;
 			};
-			const g = d?.snapshot ?? d;
-			if (g && typeof g.id === "string" && typeof g.objective === "string") {
+			const target = (d?.goal ?? d) as Record<string, unknown> | undefined;
+			if (target && typeof target.id === "string" && typeof target.objective === "string") {
 				return {
 					type: "goal/change",
 					goal: {
-						id: g.id as string,
-						revision: typeof g.revision === "number" ? g.revision : 1,
-						objective: g.objective as string,
-						phase: (g.phase as "active" | "paused" | "blocked" | "complete") || "active",
-						roundsStarted: typeof g.roundsStarted === "number" ? g.roundsStarted : 0,
-						maxGoalRounds: typeof g.maxGoalRounds === "number" ? g.maxGoalRounds : 256,
-						blockedReason: g.blockedReason as { code: string; message: string } | undefined,
-						createdAt: typeof g.createdAt === "number" ? g.createdAt : Date.now(),
-						updatedAt: typeof g.updatedAt === "number" ? g.updatedAt : Date.now(),
+						id: target.id as string,
+						revision: typeof target.revision === "number" ? target.revision : 1,
+						objective: target.objective as string,
+						phase: (target.phase as "active" | "paused" | "blocked" | "complete") || "active",
+						roundsStarted: typeof d.roundsStarted === "number" ? d.roundsStarted : (typeof target.roundsStarted === "number" ? (target.roundsStarted as number) : 0),
+						maxGoalRounds: typeof target.maxGoalRounds === "number" ? (target.maxGoalRounds as number) : 256,
+						blockedReason: target.blockedReason as { code: string; message: string } | undefined,
+						createdAt: typeof d.createdAt === "number" ? d.createdAt : (typeof target.createdAt === "number" ? (target.createdAt as number) : Date.now()),
+						updatedAt: typeof d.updatedAt === "number" ? d.updatedAt : (typeof target.updatedAt === "number" ? (target.updatedAt as number) : Date.now()),
+					},
+				};
+			}
+			if (d?.operation === "clear" && d.cleared) {
+				return {
+					type: "goal/change",
+					goal: {
+						id: d.cleared.id,
+						revision: d.cleared.revision,
+						objective: "(目标已清除)",
+						phase: "complete",
+						roundsStarted: 0,
+						maxGoalRounds: 0,
+						createdAt: Date.now(),
+						updatedAt: Date.now(),
 					},
 				};
 			}
@@ -232,7 +250,9 @@ interface Tracked {
 export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 	const c = deps.ctx as unknown as {
 		agents: AgentRegistrySurface;
+		on?(event: string, fn: (sess: unknown, ev: SessionEvent) => void): () => void;
 	};
+
 	// Per-key model selection: prefer the per-conversation resolver, fall back
 	// to the legacy shared {current} object. The returned object is expected
 	// to be STABLE and MUTABLE per key (installModelSelection keeps a
@@ -800,17 +820,23 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		tracked.set(key, { handle, lastUsedAt: Date.now() });
 		keyBySession.set(sessionId, key);
 
-		// Agent-scoped session/event subscription → normalized bridge events.
-		const disp = agent.ctx.on(
+		// Context session/event subscription → normalized bridge events.
+		const onFn = c.on ?? agent.ctx.on?.bind(agent.ctx);
+		const disp = onFn?.(
 			"session/event",
-			(_session: unknown, ev: SessionEvent) => {
+			(sess: unknown, ev: SessionEvent) => {
+				if (sess !== undefined && sess !== agent.session && (sess as { id?: string })?.id !== sessionId) {
+					return;
+				}
 				const out = toSessionEventOut(ev);
 				if (!out) return;
 				const set = listeners.get(key);
 				if (set) for (const fn of set) fn(out);
 			},
-		);
+		) ?? (() => {});
 		disposers.set(key, disp);
+
+
 
 		// Surface agent-loop failures that dsh-agent-loop's kick() swallows
 		// (its driver catch is empty). Without this, a turn that dies in
