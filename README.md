@@ -52,7 +52,8 @@
 | 🩺 **一键诊断** | `/doctor` → **ZIP 诊断包**（含当前会话完整 DSH session log + 脱敏配置 + ISSUE.md），发回飞书，贴给 AI 即可定位 |
 | ✍️ **Markdown 渲染** | 回复自动检测 markdown → **CardKit 卡片**渲染（标题/列表/代码块/表格），纯文本走文本消息 |
 | 🌊 **可选流式输出** | `/lark-config streaming.enabled=true` 热开 CardKit schema 2.0 流式卡片，逐字打印（默认关，省流量） |
-| 🆕 **会话管理** | `/new` 当前工作区新起会话（不进 Agent）；`/resume` 恢复当前工作区的历史会话（点选/序号/id 前缀，接续历史上下文）；`/workspace <路径>` 切换工作区（`~` 展开，Windows 盘符/UNC 路径可用）；重启后会话 id 持久化，**不丢会话行** |
+| 🆕 **长任务目标驱动** | `/goal <目标>` 直接在飞书启动自主长任务闭环；支持 `/goal pause`（暂停）、`/goal resume`（继续）、`/goal clear`（清除）；纯文本自然对话交互，告别冗余看板干扰 |
+| 🆕 **会话管理与恢复** | `/new` 当前工作区新起会话；`/resume` 极简卡片恢复历史会话（点选/序号/id 前缀，自动提取会话真实标题，彻底解决跨重启 live session 冲突）；`/workspace <路径>` 切换工作区；按会话完全独立持久化工作区/模型/模式 |
 | 🖥 **复用 DSH Web GUI** | 桥 Agent = 原生 DSH session，聊天/流式/工具卡/设置全由 GUI 呈现；会话自动归入对应工作区（不再"未分组"）；Web 面板实时显示 Outbox/补发计数 |
 | 👥 **访问控制** | `allowlist` 限定可对话的 open_id 白名单；`groupPolicy` 群聊触发策略（open / mention / keywords / reply）；`denyList` 命令前缀拒绝兜底 |
 | 🔓 **默认 Full access** | 沙箱全访问 + 审批 never，零打扰 |
@@ -123,16 +124,17 @@ dsh web
 
 | 类别 | 命令 | 行为 |
 | ---- | ---- | ---- |
-| 选择类 | `/mode` `/permission` `/model` | **单选按钮卡片**，点选即切换 |
+| 选择类 | `/mode` `/permission` `/model` | **单选按钮卡片**，点选即切换（动态感知自建 preset 与提供商） |
+| 目标类 | `/goal [目标\|pause\|resume\|clear]` | 启动长任务自主执行 / 暂停 / 恢复 / 清除当前目标 |
 | 状态类 | `/status` `/sessions` `/help` | 全链路健康（含 Outbox/补发计数）/ 会话列表 / 帮助卡片 |
-| 会话类 | `/new` `/resume [序号\|id]` `/stop` `/workspace <路径>` | 新会话 / 恢复历史会话 / 停当前任务 / 切工作区 |
+| 会话类 | `/new` `/resume [序号\|id]` `/stop` `/workspace <路径>` | 新会话 / 极简恢复历史会话 / 停当前任务 / 切工作区 |
 | 诊断 | `/doctor` | ZIP 诊断包（session log + 配置 + ISSUE.md） |
 | 热改 | `/lark-config key=value` | 热改配置（如 `groupPolicy=open`、`agentPreset=standard`、`streaming.enabled=true`） |
-| DSH 命令 | `/goal` `/compact` 等 | 原生执行，结果回飞书 |
+| DSH 命令 | `/compact` 等 | 原生执行，结果回飞书 |
 | 多媒体 | 发图片/文件 | 图片→视觉模型；文件→文本提取 |
 | 意图确认 | 模型提问 | 自动转**飞书意图确认卡片**，选项或输入作答 |
 
-> 命令无拦截、无门禁：一切 `/` 消息要么桥处理，要么原样交 DSH——绝不停默丢弃。skill 无前缀，直接说任务即可。
+> 命令无拦截、无门禁：一切 `/` 消息要么桥处理，要么原样交 DSH——绝不静默丢弃。skill 无前缀，直接说任务即可。
 
 ## ⚙️ 常用配置（`/lark-config` 热改，立即生效并持久化）
 
@@ -163,7 +165,7 @@ dsh web
 ```bash
 npm run dev:link   # 链接本地 DSH checkout（类型检查/测试需要）
 npm run check      # tsc --noEmit
-npm test           # 162 项单元 + 集成测试
+npm test           # 247 项单元 + 集成测试
 npm run build      # tsdown → dist/（宿主 ESM + client bundle）
 npm pack           # 产出可分发 tarball
 ```
@@ -172,7 +174,7 @@ npm pack           # 产出可分发 tarball
 
 `host`（SDK 适配/认证）→ `inbound`（传输/群触发/断连补偿/Inbound WAL）→ `application`（命令路由/消息编排/诊断）→ `outbound`（Outbox/事件转发/卡片）→ `sessions`（每会话 Agent 管理）。
 
-CI（GitHub Actions）：push/PR 自动跑类型检查 + 162 项测试 + 构建；发布 npm 走 tag release 的 Publish workflow。
+CI（GitHub Actions）：push/PR 自动跑类型检查 + 247 项测试 + 构建；发布 npm 走 tag release 的 Publish workflow。
 
 ## 💬 加入飞书群
 
@@ -222,7 +224,8 @@ MIT — 自由使用、修改、分发。
 | 🩺 **One-click diagnostics** | `/doctor` → **ZIP bundle** (full DSH session log + sanitized config + ISSUE.md) back to the chat |
 | ✍️ **Markdown rendering** | Replies auto-render as CardKit cards (headings/lists/code/tables); plain text stays plain |
 | 🌊 **Optional streaming** | `/lark-config streaming.enabled=true` hot-enables CardKit schema 2.0 streaming cards (off by default, saves traffic) |
-| 🆕 **Session management** | `/new` opens a fresh session; `/resume` picks up a historical session of the current workspace (button/index/id-prefix); `/workspace <path>` switches (with `~`, Windows drive/UNC paths OK); session ids persist across restarts |
+| 🆕 **Goal-driven long tasks** | `/goal <objective>` launches autonomous long-running task loops directly from Feishu; `/goal pause` / `resume` / `clear` manage execution via clean natural conversation |
+| 🆕 **Session management** | `/new` opens a fresh session; `/resume` clean-restores a historical session (button/index/id-prefix, resolves true titles, fixes cross-restart session collision); `/workspace <path>` switches; per-session isolated configuration |
 | 🖥 **Reuses DSH Web GUI** | Bridge agents are native DSH sessions; conversations auto-group under their workspace; the web panel shows live Outbox/replay counters |
 | 👥 **Access control** | `allowlist` restricts inbound to specific open_ids; `groupPolicy` (open / mention / keywords / reply); `denyList` command-prefix deny |
 | 🔓 **Full access by default** | Sandbox full access + never-ask approvals |
@@ -262,11 +265,12 @@ Suspicious *Already up to date*? Run `dsh plugin --profile web outdated` first �
 ## ⌨️ Commands (Feishu side)
 
 - **Selectors** (single-select cards): `/mode` `/permission` `/model`
+- **Goals**: `/goal [objective|pause|resume|clear]` (autonomous tasks / pause / resume / clear)
 - **Status**: `/status` `/sessions` `/help`
 - **Sessions**: `/new` `/resume [index|id]` `/stop` `/workspace <path>`
 - **Diagnostics**: `/doctor` (ZIP with session log)
 - **Hot reload**: `/lark-config key=value`
-- **DSH commands** run natively: `/goal` `/compact` …
+- **DSH commands** run natively: `/compact` …
 - **Media**: send images/files to the bot
 - **Intent confirmations** auto-arrive as cards
 
@@ -297,7 +301,7 @@ Send `/doctor` in Feishu — you get a ZIP with the full session log, sanitized 
 npm run dev:link && npm run check && npm test && npm run build
 ```
 
-162 unit + integration tests. GitHub Actions CI runs typecheck + tests + build on every push/PR; npm publishing rides the release-tagged Publish workflow.
+247 unit + integration tests. GitHub Actions CI runs typecheck + tests + build on every push/PR; npm publishing rides the release-tagged Publish workflow.
 
 Architecture (Cordis plugin, `dsh.bundle` format):
 `host` (SDK adapter/auth) → `inbound` (transport/group policy/compensation/Inbound WAL) → `application` (command routing/orchestration/diagnostics) → `outbound` (Outbox/event forwarding/cards) → `sessions` (per-chat agent management).
