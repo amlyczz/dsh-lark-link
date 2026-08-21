@@ -904,9 +904,48 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			return ensureAgent(key);
 		},
 		async resumeAgent(key, sessionId, opts) {
-			// Detach the current agent exactly like /new (rotateKey mints a
-			// fresh nonce + drops listeners/tracking) — NEVER dispose it: the
-			// previous session's GUI row and persisted log must survive.
+			// If this conversation already owns this exact live session, return it directly.
+			const existingCurrent = tracked.get(key);
+			if (existingCurrent && existingCurrent.handle.sessionId === sessionId) {
+				return existingCurrent.handle;
+			}
+
+			// If sessionId is currently held by an active agent in tracked, dispose the old agent
+			// so the session is retired from ctx.sessions before agents.resume prepares it.
+			const oldOwnerKey = keyBySession.get(sessionId);
+			if (oldOwnerKey) {
+				const oldT = tracked.get(oldOwnerKey);
+				if (oldT) {
+					disposers.get(oldOwnerKey)?.();
+					disposers.delete(oldOwnerKey);
+					listeners.delete(oldOwnerKey);
+					tracked.delete(oldOwnerKey);
+					keyBySession.delete(sessionId);
+					try {
+						await oldT.handle.dispose();
+					} catch {
+						// best-effort
+					}
+				}
+			}
+
+			// If any root agent in c.agents is holding this session, dispose it to free the session from ctx.sessions
+			try {
+				const roots = (c.agents as unknown as { roots?(): Array<{ id?: string; session?: { id?: string }; dispose?(): Promise<void> }> })?.roots?.() ?? [];
+				for (const root of roots) {
+					if (root.session?.id === sessionId && typeof root.dispose === "function") {
+						try {
+							await root.dispose();
+						} catch {
+							// best-effort
+						}
+					}
+				}
+			} catch {
+				// best-effort
+			}
+
+			// Detach the current agent on `key`
 			rotateKey(key);
 			if (opts?.preset) presetOverrides.set(key, opts.preset);
 			pendingResume.set(key, { sessionId });
@@ -918,6 +957,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				pendingResume.delete(key);
 			}
 		},
+
 		get: (key) => tracked.get(key)?.handle,
 		keyForSessionId: (sessionId) => keyBySession.get(sessionId),
 		async listPresets() {

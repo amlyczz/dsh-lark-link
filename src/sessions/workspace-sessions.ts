@@ -23,6 +23,7 @@ export interface SessionHeaderLike {
 	cwd?: string;
 	agentPreset?: string;
 	origin?: string;
+	title?: string;
 }
 
 export interface WorkspaceSessionInfo {
@@ -31,6 +32,8 @@ export interface WorkspaceSessionInfo {
 	createdAt: number;
 	/** stored agentPreset — present on the service source only. */
 	preset?: string;
+	/** Human-readable session title (if available). */
+	title?: string;
 	source: "service" | "scan";
 }
 
@@ -45,6 +48,8 @@ export interface ListWorkspaceSessionsDeps {
 	cwd: string;
 	/** live sessionPersistence service (optional — scan fallback otherwise). */
 	persistence?: PersistenceListSource;
+	/** Optional title resolver for session ids. */
+	titleFor?: (sessionId: string) => string | undefined;
 	/** ids to hide (e.g. this conversation's CURRENT session). */
 	exclude?: string[];
 	/** cap (default 10). */
@@ -104,12 +109,16 @@ export async function listWorkspaceSessions(
 				)
 				.sort((a, b) => b.createdAt - a.createdAt)
 				.slice(0, limit)
-				.map<WorkspaceSessionInfo>((h) => ({
-					id: h.id,
-					createdAt: h.createdAt,
-					...(h.agentPreset ? { preset: h.agentPreset } : {}),
-					source: "service",
-				}));
+				.map<WorkspaceSessionInfo>((h) => {
+					const title = deps.titleFor?.(h.id) ?? h.title;
+					return {
+						id: h.id,
+						createdAt: h.createdAt,
+						...(h.agentPreset ? { preset: h.agentPreset } : {}),
+						...(title ? { title } : {}),
+						source: "service",
+					};
+				});
 			return rows;
 		} catch {
 			// fall through to the filesystem scan
@@ -130,8 +139,10 @@ export async function listWorkspaceSessions(
 		}
 		const id = decodeSessionDirName(name);
 		if (exclude.has(id)) continue;
-		rows.push({ id, createdAt: mtime, source: "scan" });
+		const title = deps.titleFor?.(id);
+		rows.push({ id, createdAt: mtime, ...(title ? { title } : {}), source: "scan" });
 	}
 	rows.sort((a, b) => b.createdAt - a.createdAt);
 	return rows.slice(0, limit);
 }
+

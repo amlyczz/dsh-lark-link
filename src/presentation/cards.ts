@@ -333,6 +333,7 @@ export function resumeCard(
 		id: string;
 		createdAt: number;
 		preset?: string;
+		title?: string;
 	}>,
 	currentSessionId?: string,
 	opts: { now?: () => number } = {},
@@ -362,15 +363,17 @@ export function resumeCard(
 	let n = 0;
 	sessions.forEach((s) => {
 		const isCurrent = s.id === currentSessionId;
+		const titlePart = s.title ? s.title.slice(0, 32) : (s.preset ? `会话 · ${s.preset}` : "会话");
 		const label = isCurrent
-			? `当前会话（${rel(s.createdAt)}${s.preset ? ` · ${s.preset}` : ""}）`
-			: `#${++n} ${rel(s.createdAt)}${s.preset ? ` · ${s.preset}` : ""}`;
+			? `当前会话: ${titlePart}（${rel(s.createdAt)}）`
+			: `#${++n} ${titlePart}（${rel(s.createdAt)}）`;
 		const btn = button(label, { op: `resume:${encodeURIComponent(s.id)}` });
 		if (isCurrent) {
 			(btn as { disabled?: boolean }).disabled = true;
 		}
 		elements.push(btn);
 	});
+
 	if (currentSessionId && !sessions.some((s) => s.id === currentSessionId)) {
 		// The current session was excluded from the listing (fresh chat, no
 		// history yet) — still show where the conversation IS.

@@ -1107,9 +1107,25 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					preset?: string;
 					source: string;
 				}> = [];
-				// The current session stays LISTED (rendered as a disabled
-				// "当前会话" row) but is never a resume target.
-				const currentSessionId2 = currentSessionId ?? "";
+				const titleService = (ctx as unknown as { get?(name: string): unknown }).get?.("sessionTitle") as {
+					get?(session: unknown): { title?: string } | undefined;
+				} | undefined;
+				const liveSessions = (ctx as unknown as { get?(name: string): unknown }).get?.("sessions") as {
+					get?(id: string): unknown;
+				} | undefined;
+				const titleFor = (sid: string): string | undefined => {
+					try {
+						const sess = liveSessions?.get?.(sid);
+						if (sess && titleService?.get) {
+							const res = titleService.get(sess);
+							if (res?.title) return res.title;
+						}
+					} catch {
+						// ignore
+					}
+					return undefined;
+				};
+
 				try {
 					sessions = await listWorkspaceSessions({
 						sessionsRoot: join(
@@ -1122,6 +1138,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 									list: async () => await persistence.list!(),
 								}
 							: undefined,
+						titleFor,
 					});
 				} catch (err) {
 					logger.warn(
@@ -1136,6 +1153,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					);
 					return true;
 				}
+
 				// Card buttons pass the id URI-ENCODED (lark-link ids contain
 				// colons which the card-action op splitter would otherwise
 				// cut at the first one); a typed /resume <id> may be raw, a
@@ -1149,8 +1167,9 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// Numbering matches the card: only RESUMABLE rows carry #n
 				// (the current session is displayed disabled and unnumbered).
 				const resumable = sessions.filter(
-					(s) => s.id !== currentSessionId2,
+					(s) => s.id !== currentSessionId,
 				);
+
 				const pick = /^\d+$/.test(sel)
 					? resumable[Number(sel) - 1]
 					: resumable.find(
