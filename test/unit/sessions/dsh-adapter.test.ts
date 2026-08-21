@@ -143,6 +143,9 @@ function fakeRegistry(
 			};
 		},
 		async resume(resumeOpts: { resumeSessionId: string; setup?: unknown }) {
+			if (agents.has(resumeOpts.resumeSessionId)) {
+				throw new Error(`cannot prepare session "${resumeOpts.resumeSessionId}" while it is live`);
+			}
 			await runSetup(resumeOpts.setup);
 			resumed.push(resumeOpts);
 			const agent = makeAgent(resumeOpts.resumeSessionId);
@@ -593,7 +596,7 @@ test("adapter: resumeAgent calls agents.resume with the stored preset and tracks
 	);
 });
 
-test("adapter: resumeAgent detaches the previous agent WITHOUT disposing it", async () => {
+test("adapter: resumeAgent detaches and cleans up the previous agent", async () => {
 	const registry = fakeRegistry();
 	const ctx = ctxOf(registry, undefined);
 	const backend = mkBackend(ctx, undefined, "rRes123");
@@ -612,14 +615,25 @@ test("adapter: resumeAgent detaches the previous agent WITHOUT disposing it", as
 		resumed.agentId,
 		"the resumed agent replaces the tracked handle",
 	);
-	// old session still in the registry — resume NEVER disposes it (its GUI
-	// row and persisted log must survive; same trade-off as /new rotate).
-	assert.ok(registry.agents.has(oldSessionId), "old session stays listed");
-	const oldAgent = registry.agents.get(oldSessionId) as {
-		ctx: { emit(event: string, ev: unknown): void };
-	};
-	oldAgent.ctx.emit("session/event", { type: "turn/start", seq: 0, time: 0, data: {} });
+	// old session was released so it does not conflict when resumed later
 	assert.equal(events.length, 0, "old agent's events no longer forwarded");
+});
+
+test("adapter: resumeAgent can safely resume a previously live session without collision", async () => {
+	const registry = fakeRegistry();
+	const ctx = ctxOf(registry, undefined);
+	const backend = mkBackend(ctx, undefined, "rResLive");
+
+	const first = await backend.ensureAgent("dm:ou_live");
+	const liveSessionId = first.sessionId;
+
+	// Rotate to start a new session (like /new)
+	backend.rotate("dm:ou_live");
+
+	// Resuming the previous liveSessionId must succeed without "cannot prepare session while it is live"
+	const restored = await backend.resumeAgent("dm:ou_live", liveSessionId);
+	assert.equal(restored.sessionId, liveSessionId);
+	assert.equal(backend.get("dm:ou_live")?.sessionId, liveSessionId);
 });
 
 test("adapter: memory backend resumeAgent adopts the given session id", async () => {

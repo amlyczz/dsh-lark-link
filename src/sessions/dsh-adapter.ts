@@ -310,9 +310,159 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		string,
 		ReturnType<typeof createUserMessage>
 	>();
-	// Detach a key's live agent WITHOUT disposing it (rotate / resume): drop
-	// listeners + tracking so the old session row stays listed in the GUI and
-	// its persisted log survives; mint a fresh runNonce so any later create
+	/**
+	 * Thoroughly retire/evict any live agent or session matching targetSessionId from memory.
+	 * DSH session persistence requires targetSessionId to be completely absent from ctx.sessions
+	 * before agents.resume / sessionPersistence.prepare can execute.
+	 */
+	const releaseLiveSession = async (targetSessionId: string): Promise<void> => {
+		// 1. Evict from our bridge's tracked map
+		for (const [k, t] of Array.from(tracked.entries())) {
+			if (t.handle.sessionId === targetSessionId) {
+				disposers.get(k)?.();
+				disposers.delete(k);
+				listeners.delete(k);
+				tracked.delete(k);
+				keyBySession.delete(targetSessionId);
+				try {
+					await t.handle.dispose();
+				} catch (err) {
+					deps.logger?.warn?.(
+						`releaseLiveSession: error disposing tracked handle for ${targetSessionId}: ${String(err)}`,
+					);
+				}
+			}
+		}
+
+		const ownerKey = keyBySession.get(targetSessionId);
+		if (ownerKey) {
+			keyBySession.delete(targetSessionId);
+			const t = tracked.get(ownerKey);
+			if (t) {
+				disposers.get(ownerKey)?.();
+				disposers.delete(ownerKey);
+				listeners.delete(ownerKey);
+				tracked.delete(ownerKey);
+				try {
+					await t.handle.dispose();
+				} catch {}
+			}
+		}
+
+		// 2. Dispose live agent from DSH agents service (AgentRegistry)
+		try {
+			const agentsRegistry = (c as unknown as {
+				agents?: {
+					get?(id: string): unknown;
+					delete?(id: string): unknown;
+					agents?: Map<string, unknown>;
+					list?(): Array<{
+						id?: string;
+						session?: { id?: string };
+						ctx?: {
+							scope?: { dispose?(): Promise<void> | void };
+							dispose?(): Promise<void> | void;
+						};
+					}>;
+					store?: Map<
+						string,
+						{
+							detach?(): void;
+							agent?: {
+								ctx?: {
+									scope?: { dispose?(): Promise<void> | void };
+									dispose?(): Promise<void> | void;
+								};
+							};
+						}
+					>;
+				};
+			}).agents;
+
+			if (agentsRegistry) {
+				const liveAgent = agentsRegistry.get?.(targetSessionId) as
+					| {
+							ctx?: {
+								scope?: { dispose?(): Promise<void> | void };
+								dispose?(): Promise<void> | void;
+							};
+					  }
+					| undefined;
+				if (liveAgent?.ctx) {
+					try {
+						await (liveAgent.ctx.scope?.dispose?.() ?? liveAgent.ctx.dispose?.());
+					} catch {}
+				}
+
+				const list = agentsRegistry.list?.() ?? [];
+				for (const a of list) {
+					if (a.id === targetSessionId || a.session?.id === targetSessionId) {
+						try {
+							await (a.ctx?.scope?.dispose?.() ?? a.ctx?.dispose?.());
+						} catch {}
+					}
+				}
+
+				const agentStore = agentsRegistry.store;
+				if (agentStore && agentStore.has(targetSessionId)) {
+					const entry = agentStore.get(targetSessionId);
+					try {
+						await (entry?.agent?.ctx?.scope?.dispose?.() ?? entry?.agent?.ctx?.dispose?.());
+					} catch {}
+					try {
+						entry?.detach?.();
+					} catch {}
+					agentStore.delete(targetSessionId);
+				}
+
+				if (agentsRegistry.agents && agentsRegistry.agents.has(targetSessionId)) {
+					agentsRegistry.agents.delete(targetSessionId);
+				}
+				if (typeof agentsRegistry.delete === "function") {
+					try {
+						agentsRegistry.delete(targetSessionId);
+					} catch {}
+				}
+			}
+		} catch {}
+
+		// 3. Detach live session from DSH sessions service (SessionStore)
+		try {
+			const sessionsRegistry = (c as unknown as {
+				sessions?: {
+					get?(id: string): unknown;
+					store?: Map<string, { detach?(): void; session?: unknown }>;
+				};
+			}).sessions;
+			if (sessionsRegistry?.store && sessionsRegistry.store.has(targetSessionId)) {
+				const entry = sessionsRegistry.store.get(targetSessionId);
+				try {
+					entry?.detach?.();
+				} catch {}
+				sessionsRegistry.store.delete(targetSessionId);
+			}
+		} catch {}
+
+		// 4. Await persistence retirement if pending
+		try {
+			const persistence =
+				(c as unknown as {
+					get?(name: string): { waitForRetirement?(id: string): Promise<void> };
+					sessionPersistence?: { waitForRetirement?(id: string): Promise<void> };
+				}).get?.("sessionPersistence") ??
+				(c as unknown as { sessionPersistence?: { waitForRetirement?(id: string): Promise<void> } }).sessionPersistence;
+			if (typeof persistence?.waitForRetirement === "function") {
+				await persistence.waitForRetirement(targetSessionId);
+			}
+		} catch {}
+
+		// Settle microtasks
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	};
+
+	// Detach a key's live agent and clean it up (rotate / resume): drop
+	// listeners + tracking and dispose the agent so it is retired from memory;
+	// its persisted log on disk survives intact; mint a fresh runNonce so any later create
 	// can never collide with the old id family.
 	const rotateKey = (key: string): void => {
 		// A stale text-only twin must not survive rotation — the turn it
@@ -333,6 +483,11 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			tracked.delete(key);
 			const oldId = t.handle.sessionId;
 			if (oldId) keyBySession.delete(oldId);
+			try {
+				void t.handle.dispose();
+			} catch {
+				// best-effort
+			}
 		}
 	};
 
@@ -549,7 +704,8 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		};
 		if (pending) {
 			// Resume path — the persisted session id is EXPLICIT, there is no
-			// create/collision concern; a failure here must surface to /resume.
+			// create/collision concern; release any live remnants first so persistence prepare succeeds.
+			await releaseLiveSession(pending.sessionId);
 			try {
 				owned = await c.agents.resume({
 					resumeSessionId: pending.sessionId,
@@ -570,6 +726,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			let resumedOwned: AgentHandleSurface | undefined;
 			if (activeId) {
 				try {
+					await releaseLiveSession(activeId);
 					resumedOwned = await c.agents.resume({
 						resumeSessionId: activeId,
 						...(agentOptions ? { agentOptions } : {}),
@@ -601,6 +758,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				} catch (err) {
 					if (err instanceof Error && /already exists|already has a persisted log/i.test(err.message)) {
 						try {
+							await releaseLiveSession(sessionId);
 							owned = await c.agents.resume({
 								resumeSessionId: sessionId,
 								...(agentOptions ? { agentOptions } : {}),
@@ -930,46 +1088,19 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 			return ensureAgent(key);
 		},
 		async resumeAgent(key, sessionId, opts) {
-			// If this conversation already owns this exact live session, return it directly.
+			// If this conversation already owns this exact live session, return it directly
+			// when no preset change is requested.
 			const existingCurrent = tracked.get(key);
-			if (existingCurrent && existingCurrent.handle.sessionId === sessionId) {
+			if (
+				existingCurrent &&
+				existingCurrent.handle.sessionId === sessionId &&
+				(!opts?.preset || opts.preset === deps.preset?.(key))
+			) {
 				return existingCurrent.handle;
 			}
 
-			// If sessionId is currently held by an active agent in tracked, dispose the old agent
-			// so the session is retired from ctx.sessions before agents.resume prepares it.
-			const oldOwnerKey = keyBySession.get(sessionId);
-			if (oldOwnerKey) {
-				const oldT = tracked.get(oldOwnerKey);
-				if (oldT) {
-					disposers.get(oldOwnerKey)?.();
-					disposers.delete(oldOwnerKey);
-					listeners.delete(oldOwnerKey);
-					tracked.delete(oldOwnerKey);
-					keyBySession.delete(sessionId);
-					try {
-						await oldT.handle.dispose();
-					} catch {
-						// best-effort
-					}
-				}
-			}
-
-			// If any root agent in c.agents is holding this session, dispose it to free the session from ctx.sessions
-			try {
-				const roots = (c.agents as unknown as { roots?(): Array<{ id?: string; session?: { id?: string }; dispose?(): Promise<void> }> })?.roots?.() ?? [];
-				for (const root of roots) {
-					if (root.session?.id === sessionId && typeof root.dispose === "function") {
-						try {
-							await root.dispose();
-						} catch {
-							// best-effort
-						}
-					}
-				}
-			} catch {
-				// best-effort
-			}
+			// Fully retire any live agent/session holding sessionId so DSH persistence can prepare it
+			await releaseLiveSession(sessionId);
 
 			// Detach the current agent on `key`
 			rotateKey(key);
