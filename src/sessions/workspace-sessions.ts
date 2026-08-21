@@ -39,7 +39,11 @@ export interface WorkspaceSessionInfo {
 
 export interface PersistenceListSource {
 	list(signal?: AbortSignal): Promise<SessionHeaderLike[]>;
+	inspect?(id: string, signal?: AbortSignal): Promise<{ meta?: unknown; events?: readonly unknown[] } | undefined>;
+	load?(id: string): Promise<{ header?: unknown; events?: readonly unknown[] } | undefined>;
+	readFrom?(id: string, fromSeq: number): Promise<{ meta?: unknown; events?: readonly unknown[] } | undefined>;
 }
+
 
 export interface ListWorkspaceSessionsDeps {
 	/** DSH sessions root — <DSH_HOME>/sessions. */
@@ -54,6 +58,47 @@ export interface ListWorkspaceSessionsDeps {
 	exclude?: string[];
 	/** cap (default 10). */
 	limit?: number;
+}
+
+/**
+ * Extract a human-readable title from a session's events:
+ * 1. session/title event (highest precedence)
+ * 2. first user message text (deterministic fallback)
+ */
+export function extractTitleFromEvents(events: readonly unknown[]): string | undefined {
+	if (!Array.isArray(events) || events.length === 0) return undefined;
+	// 1. Look for explicit session/title event from the end
+	for (let i = events.length - 1; i >= 0; i--) {
+		const ev = events[i] as { type?: string; data?: { title?: string } };
+		if (ev?.type === "session/title" && ev.data?.title) {
+			const t = ev.data.title.trim();
+			if (t) return t.slice(0, 36);
+		}
+	}
+	// 2. Look for first human text-bearing user message
+	for (let i = 0; i < events.length; i++) {
+		const ev = events[i] as {
+			type?: string;
+			data?: {
+				source?: { kind?: string };
+				content?: Array<{ type?: string; text?: string }>;
+			};
+		};
+		if (ev?.type === "user/message") {
+			const text = (ev.data?.content ?? [])
+				.filter((b) => b?.type === "text" && typeof b.text === "string")
+				.map((b) => b.text?.trim())
+				.filter(Boolean)
+				.join(" ");
+			if (text) {
+				const clean = text.replace(/^\/[a-zA-Z0-9_-]+\s*/, "").trim();
+				const candidate = clean || text;
+				const oneLine = candidate.replace(/[\r\n\t]+/g, " ").trim();
+				if (oneLine) return oneLine.slice(0, 36);
+			}
+		}
+	}
+	return undefined;
 }
 
 /**
@@ -95,12 +140,13 @@ export async function listWorkspaceSessions(
 ): Promise<WorkspaceSessionInfo[]> {
 	const limit = deps.limit ?? 10;
 	const exclude = new Set(deps.exclude ?? []);
+	let rows: WorkspaceSessionInfo[] = [];
 
 	// Source 1: the persistence service — headers give exact cwd + origin.
 	if (deps.persistence?.list) {
 		try {
 			const headers = await deps.persistence.list();
-			const rows = headers
+			rows = headers
 				.filter(
 					(h) =>
 						h.cwd === deps.cwd &&
@@ -119,30 +165,69 @@ export async function listWorkspaceSessions(
 						source: "service",
 					};
 				});
-			return rows;
 		} catch {
 			// fall through to the filesystem scan
 		}
 	}
 
 	// Source 2: filesystem scan of <sessionsRoot>/<projectKey(cwd)>/.
-	const dir = join(deps.sessionsRoot, projectKeyOf(deps.cwd));
-	if (!existsSync(dir)) return [];
-	const rows: WorkspaceSessionInfo[] = [];
-	for (const name of readdirSync(dir)) {
-		const log = join(dir, name, "session.jsonl.zstd");
-		let mtime: number;
-		try {
-			mtime = statSync(log).mtimeMs;
-		} catch {
-			continue; // no materialized log — not resumable
+	if (rows.length === 0) {
+		const dir = join(deps.sessionsRoot, projectKeyOf(deps.cwd));
+		if (existsSync(dir)) {
+			for (const name of readdirSync(dir)) {
+				const log = join(dir, name, "session.jsonl.zstd");
+				let mtime: number;
+				try {
+					mtime = statSync(log).mtimeMs;
+				} catch {
+					continue; // no materialized log — not resumable
+				}
+				const id = decodeSessionDirName(name);
+				if (exclude.has(id)) continue;
+				const title = deps.titleFor?.(id);
+				rows.push({ id, createdAt: mtime, ...(title ? { title } : {}), source: "scan" });
+			}
+			rows.sort((a, b) => b.createdAt - a.createdAt);
+			rows = rows.slice(0, limit);
 		}
-		const id = decodeSessionDirName(name);
-		if (exclude.has(id)) continue;
-		const title = deps.titleFor?.(id);
-		rows.push({ id, createdAt: mtime, ...(title ? { title } : {}), source: "scan" });
 	}
-	rows.sort((a, b) => b.createdAt - a.createdAt);
-	return rows.slice(0, limit);
+
+	// Resolve titles from persistence events if not already present
+	if (deps.persistence && rows.length > 0) {
+		await Promise.allSettled(
+			rows.map(async (row) => {
+				if (row.title) return;
+				if (deps.titleFor) {
+					const t = deps.titleFor(row.id);
+					if (t) {
+						row.title = t;
+						return;
+					}
+				}
+				try {
+					let events: readonly unknown[] | undefined;
+					if (deps.persistence?.inspect) {
+						const res = await deps.persistence.inspect(row.id);
+						events = res?.events;
+					} else if (deps.persistence?.load) {
+						const res = await deps.persistence.load(row.id);
+						events = res?.events;
+					} else if (deps.persistence?.readFrom) {
+						const res = await deps.persistence.readFrom(row.id, 0);
+						events = res?.events;
+					}
+					if (events) {
+						const extracted = extractTitleFromEvents(events);
+						if (extracted) row.title = extracted;
+					}
+				} catch {
+					// best-effort
+				}
+			}),
+		);
+	}
+
+	return rows;
 }
+
 

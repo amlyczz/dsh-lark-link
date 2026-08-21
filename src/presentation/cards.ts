@@ -363,7 +363,7 @@ export function resumeCard(
 	let n = 0;
 	sessions.forEach((s) => {
 		const isCurrent = s.id === currentSessionId;
-		const titlePart = s.title ? s.title.slice(0, 32) : (s.preset ? `会话 · ${s.preset}` : "会话");
+		const titlePart = s.title ? s.title.slice(0, 32) : "会话";
 		const label = isCurrent
 			? `当前会话: ${titlePart}（${rel(s.createdAt)}）`
 			: `#${++n} ${titlePart}（${rel(s.createdAt)}）`;
@@ -373,6 +373,7 @@ export function resumeCard(
 		}
 		elements.push(btn);
 	});
+
 
 	if (currentSessionId && !sessions.some((s) => s.id === currentSessionId)) {
 		// The current session was excluded from the listing (fresh chat, no

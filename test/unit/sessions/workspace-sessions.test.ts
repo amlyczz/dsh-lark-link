@@ -7,7 +7,9 @@ import {
 	projectKeyOf,
 	decodeSessionDirName,
 	listWorkspaceSessions,
+	extractTitleFromEvents,
 } from "../../../src/sessions/workspace-sessions.ts";
+
 
 // ---- projectKeyOf (DSH persistence 的目录编码，必须逐字对齐) -----------------
 
@@ -179,3 +181,68 @@ test("list: service failure falls back to the filesystem scan", async () => {
 	assert.equal(rows[0]!.source, "scan");
 	rmSync(root, { recursive: true, force: true });
 });
+
+test("extractTitleFromEvents: session/title event takes precedence over user/message", () => {
+	const events = [
+		{
+			seq: 0,
+			type: "user/message",
+			data: {
+				source: { kind: "user" },
+				content: [{ type: "text", text: "First prompt text" }],
+			},
+		},
+		{
+			seq: 1,
+			type: "session/title",
+			data: { title: "Generated Session Title" },
+		},
+	];
+	assert.equal(extractTitleFromEvents(events), "Generated Session Title");
+});
+
+test("extractTitleFromEvents: falls back to first human user message when no session/title", () => {
+	const events = [
+		{
+			seq: 0,
+			type: "user/message",
+			data: {
+				source: { kind: "user" },
+				content: [{ type: "text", text: "帮我实现飞书机器人的流式卡片输出" }],
+			},
+		},
+	];
+	assert.equal(extractTitleFromEvents(events), "帮我实现飞书机器人的流式卡片输出");
+});
+
+test("list: inspect resolves titles from persistence events", async () => {
+	const persistence = {
+		async list() {
+			return [{ id: "sess-1", createdAt: 1000, cwd: "/ws/proj" }];
+		},
+		async inspect(id: string) {
+			if (id === "sess-1") {
+				return {
+					events: [
+						{
+							type: "user/message",
+							data: {
+								source: { kind: "user" },
+								content: [{ type: "text", text: "测试会话标题提取" }],
+							},
+						},
+					],
+				};
+			}
+			return undefined;
+		},
+	};
+	const rows = await listWorkspaceSessions({
+		sessionsRoot: "/nonexistent",
+		cwd: "/ws/proj",
+		persistence,
+	});
+	assert.equal(rows.length, 1);
+	assert.equal(rows[0]!.title, "测试会话标题提取");
+});
+

@@ -220,12 +220,12 @@ test("resumeCard: button ops ENCODE the session id so colons survive card-action
 	assert.equal(ops[1], "resume:7c9e067f-abc");
 });
 
-test("resumeCard: relative times, preset badges, current-session row disabled, empty state", () => {
+test("resumeCard: relative times, titles, current-session row disabled, empty state", () => {
 	const now = Date.now();
 	const card = resumeCard(
 		[
-			{ id: "s1", createdAt: now - 5 * 60_000, preset: "code" },
-			{ id: "s2", createdAt: now - 3 * 86400_000, preset: "standard" },
+			{ id: "s1", createdAt: now - 5 * 60_000, title: "重构卡片流式" },
+			{ id: "s2", createdAt: now - 3 * 86400_000, title: "修复频控" },
 		],
 		"s2",
 		{ now: () => now },
@@ -236,13 +236,15 @@ test("resumeCard: relative times, preset badges, current-session row disabled, e
 		disabled?: boolean;
 	}>;
 	assert.match(buttons[0]?.text?.content ?? "", /5 分钟前/);
+	assert.match(buttons[0]?.text?.content ?? "", /重构卡片流式/);
 	assert.match(buttons[1]?.text?.content ?? "", /3 天前/);
 	assert.match(buttons[1]?.text?.content ?? "", /当前会话/);
-	const texts = JSON.stringify(card);
-	assert.match(texts, /code/, "preset shown");
+	assert.match(buttons[1]?.text?.content ?? "", /修复频控/);
 	// current session listed but its button disabled
 	assert.equal(buttons[1]?.disabled, true, "current session row disabled");
+	const texts = JSON.stringify(card);
 	assert.match(texts, /当前/);
+
 
 	const empty = resumeCard([], undefined, { now: () => now });
 	assert.match(JSON.stringify(empty), /暂无历史会话/);

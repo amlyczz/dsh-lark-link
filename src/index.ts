@@ -15,7 +15,7 @@ import { createDshAdapter } from "./sessions/dsh-adapter.ts";
 import { createMemoryDshBackend } from "./sessions/dsh-session-backend.ts";
 import { createConversationManager } from "./sessions/conversation-manager.ts";
 import { createConversationConfigStore } from "./sessions/conversation-config.ts";
-import { listWorkspaceSessions } from "./sessions/workspace-sessions.ts";
+import { listWorkspaceSessions, extractTitleFromEvents } from "./sessions/workspace-sessions.ts";
 import { createTurnSupervisor } from "./sessions/turn-supervisor.ts";
 import { createOutbox, type OutboxSender } from "./outbound/outbox.ts";
 import { createEventForwarder } from "./outbound/event-forwarder.ts";
@@ -1097,14 +1097,19 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 									cwd?: string;
 									agentPreset?: string;
 									origin?: string;
+									title?: string;
 								}>
 							>;
+							inspect?(id: string): Promise<{ meta?: unknown; events?: readonly unknown[] } | undefined>;
+							load?(id: string): Promise<{ header?: unknown; events?: readonly unknown[] } | undefined>;
+							readFrom?(id: string, fromSeq: number): Promise<{ meta?: unknown; events?: readonly unknown[] } | undefined>;
 					  }
 					| undefined;
 				let sessions: Array<{
 					id: string;
 					createdAt: number;
 					preset?: string;
+					title?: string;
 					source: string;
 				}> = [];
 				const titleService = (ctx as unknown as { get?(name: string): unknown }).get?.("sessionTitle") as {
@@ -1115,10 +1120,16 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				} | undefined;
 				const titleFor = (sid: string): string | undefined => {
 					try {
-						const sess = liveSessions?.get?.(sid);
-						if (sess && titleService?.get) {
-							const res = titleService.get(sess);
-							if (res?.title) return res.title;
+						const sess = liveSessions?.get?.(sid) as { events?: readonly unknown[] } | undefined;
+						if (sess) {
+							if (titleService?.get) {
+								const res = titleService.get(sess);
+								if (res?.title) return res.title;
+							}
+							if (sess.events) {
+								const extracted = extractTitleFromEvents(sess.events);
+								if (extracted) return extracted;
+							}
 						}
 					} catch {
 						// ignore
@@ -1136,6 +1147,16 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						persistence: persistence?.list
 							? {
 									list: async () => await persistence.list!(),
+									inspect: persistence.inspect
+										? async (id: string) => await persistence.inspect!(id)
+										: undefined,
+									load: persistence.load
+										? async (id: string) => await persistence.load!(id)
+										: undefined,
+									readFrom: persistence.readFrom
+										? async (id: string, fromSeq: number) =>
+												await persistence.readFrom!(id, fromSeq)
+										: undefined,
 								}
 							: undefined,
 						titleFor,
@@ -1145,6 +1166,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						`resume: listing workspace sessions failed: ${err instanceof Error ? err.message : String(err)}`,
 					);
 				}
+
 				const arg = _rawInput.trim();
 				if (!arg) {
 					await sender.sendCard(
