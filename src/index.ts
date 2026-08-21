@@ -72,8 +72,9 @@ import {
 	buildPlanReviewCard,
 	buildSessionResumedCard,
 } from "./presentation/cards.ts";
-import type { GoalSnapshotState } from "./common/types.ts";
+import type { GoalSnapshotState, TodoItemState } from "./common/types.ts";
 import { createTaskCardSyncer, type TaskCardSyncer } from "./outbound/task-card-syncer.ts";
+
 
 
 import { createAuthSetup, registerAppWithFetch } from "./host/auth-setup.ts";
@@ -1225,25 +1226,48 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					} catch {
 						liveGoal = undefined;
 					}
-					const liveTodos = taskCardSyncer.getState(key)?.todos;
-					if (liveGoal && liveGoal.phase !== "complete") {
-						await sender.sendCard(
-							msg.chatId,
-							buildSessionResumedCard({
-								sessionId: pick.id,
-								workspacePath: wsRoot,
-								preset: pick.preset,
-								goal: liveGoal,
-								todos: liveTodos,
-							}),
-						);
-					} else {
-						await durableReply(
-							name,
-							msg,
-							`已恢复会话（${new Date(pick.createdAt).toLocaleString("zh-CN", { hour12: false })} 开始的对话）\n下一条消息接续历史上下文；此前的会话保留，可随时 /resume 切回。`,
-						);
+
+					let liveTodos = taskCardSyncer.getState(key)?.todos;
+					const events = (rawAgent as { session?: { events?: readonly unknown[] } })?.session?.events;
+					if (Array.isArray(events)) {
+						if (!liveGoal) {
+							for (let i = events.length - 1; i >= 0; i--) {
+								const ev = events[i] as { type?: string; data?: { goal?: GoalSnapshotState } };
+								if (ev?.type === "goal/change" && ev.data?.goal) {
+									liveGoal = ev.data.goal;
+									break;
+								}
+							}
+						}
+						if (!liveTodos || liveTodos.length === 0) {
+							for (let i = events.length - 1; i >= 0; i--) {
+								const ev = events[i] as { type?: string; data?: { todos?: TodoItemState[] } };
+								if (ev?.type === "todo/write" && Array.isArray(ev.data?.todos)) {
+									liveTodos = ev.data.todos;
+									break;
+								}
+							}
+						}
 					}
+
+					if (liveGoal) {
+						await taskCardSyncer.updateGoal(key, liveGoal, wsRoot);
+					}
+					if (liveTodos && liveTodos.length > 0) {
+						await taskCardSyncer.updateTodos(key, liveTodos, wsRoot);
+					}
+
+					await sender.sendCard(
+						msg.chatId,
+						buildSessionResumedCard({
+							sessionId: pick.id,
+							workspacePath: wsRoot,
+							preset: pick.preset,
+							goal: liveGoal,
+							todos: liveTodos,
+						}),
+					);
+
 				} catch (err) {
 					await durableReply(
 						name,

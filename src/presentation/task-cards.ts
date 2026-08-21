@@ -516,18 +516,16 @@ export function buildSessionResumedCard(briefing: ResumedSessionBriefing): unkno
 				}, "primary"),
 			],
 		});
-	}
 
-	actionCols.push({
-		tag: "column",
-		width: "weighted",
-		weight: 1,
-		elements: [
-			button("📋 唤起任务看板", { op: "task:focus_board" }),
-		],
-	});
+		actionCols.push({
+			tag: "column",
+			width: "weighted",
+			weight: 1,
+			elements: [
+				button("📋 唤起任务看板", { op: "task:focus_board" }),
+			],
+		});
 
-	if (briefing.goal && briefing.goal.phase !== "complete") {
 		actionCols.push({
 			tag: "column",
 			width: "weighted",
@@ -540,13 +538,45 @@ export function buildSessionResumedCard(briefing: ResumedSessionBriefing): unkno
 				}),
 			],
 		});
-	}
 
-	elements.push({
-		tag: "column_set",
-		flex_mode: "flow",
-		columns: actionCols,
-	});
+		elements.push({
+			tag: "column_set",
+			flex_mode: "flow",
+			columns: actionCols,
+		});
+	} else {
+		elements.push({
+			tag: "markdown",
+			content: "💡 **会话已恢复**，直接发消息即可接续上下文；或点击下方按钮快速设定长任务目标：",
+		});
+
+		elements.push(button("🎯 设定新目标 (/goal)", { op: "goal" }, "primary"));
+
+		elements.push({
+			tag: "column_set",
+			flex_mode: "flow",
+			columns: [
+				{
+					tag: "column",
+					width: "weighted",
+					weight: 1,
+					elements: [button("🛠️ 构建与测试", { op: "goal:tpl:build" })],
+				},
+				{
+					tag: "column",
+					width: "weighted",
+					weight: 1,
+					elements: [button("🐞 诊断与修复", { op: "goal:tpl:fix" })],
+				},
+				{
+					tag: "column",
+					width: "weighted",
+					weight: 1,
+					elements: [button("📋 任务看板", { op: "task:focus_board" })],
+				},
+			],
+		});
+	}
 
 	return {
 		schema: "2.0",
@@ -557,3 +587,4 @@ export function buildSessionResumedCard(briefing: ResumedSessionBriefing): unkno
 		body: { elements },
 	};
 }
+
