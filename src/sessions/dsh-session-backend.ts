@@ -41,6 +41,8 @@ export type SessionEventOut =
 export interface AgentHandle {
   agentId: string;
   sessionId: string;
+  /** Live underlying DSH Agent instance if running on real DSH harness. */
+  rawAgent?: unknown;
   /** Ask the agent to handle a user message (queue; wake on idle). */
   followup(text: string, attachments?: AttachmentInput[]): Promise<void>;
   /** Cancel the current turn (only this session). */
@@ -51,6 +53,7 @@ export interface AgentHandle {
   isIdle(): boolean;
   dispose(): Promise<void>;
 }
+
 
 export interface DshSessionBackend {
   /** Get-or-create an agent for a conversation key (persisted mapping). */

@@ -546,7 +546,21 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 	// just makes the degradation diagnosable (missing CardKit scope, old
 	// client, entity-already-sent, …).
 	const cardkitNotified = new Set<string>();
+	const resolveRawAgent = (handle: unknown): unknown => {
+		if (!handle) return undefined;
+		const h = handle as { rawAgent?: unknown; agentId?: string; id?: string };
+		if (h.rawAgent) return h.rawAgent;
+		if (h.agentId) {
+			const agentsService = (ctx as unknown as { get?(name: string): unknown }).get?.("agents") as
+				| { get?(id: string): unknown }
+				| undefined;
+			const found = agentsService?.get?.(h.agentId);
+			if (found) return found;
+		}
+		return handle;
+	};
 	const notifyCardkitFailure = (sessionKey: string, err: unknown): void => {
+
 		if (cardkitNotified.has(sessionKey)) return;
 		cardkitNotified.add(sessionKey);
 		const chatId = routeStore.get(sessionKey)?.chatId;
@@ -1159,11 +1173,17 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						pick.id,
 						pick.preset ? { preset: pick.preset } : undefined,
 					);
-					const resumedAgent = bridge.backend?.get(key);
+					const resumedHandle = bridge.backend?.get(key);
+					const rawAgent = resolveRawAgent(resumedHandle);
 					const goalsService = (ctx as unknown as { get?(name: string): unknown }).get?.("goals") as {
 						get?(agent: unknown): GoalSnapshotState | undefined;
 					} | undefined;
-					const liveGoal = resumedAgent && goalsService?.get ? goalsService.get(resumedAgent) : undefined;
+					let liveGoal: GoalSnapshotState | undefined;
+					try {
+						liveGoal = rawAgent && goalsService?.get ? goalsService.get(rawAgent) : undefined;
+					} catch {
+						liveGoal = undefined;
+					}
 					const liveTodos = taskCardSyncer.getState(key)?.todos;
 					if (liveGoal && liveGoal.phase !== "complete") {
 						await sender.sendCard(
@@ -1194,16 +1214,18 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			}
 			case "goal": {
 				const key = bridge.conversationKeyFor(msg);
+
 				const wsRoot = convCfg.get(key).workspaceRoot ?? (getCfg().workspaceRoot || process.cwd());
 				const arg = _rawInput.trim();
-				let agent = bridge.backend?.get(key);
-				if (!agent) {
+				let agentHandle = bridge.backend?.get(key);
+				if (!agentHandle) {
 					try {
-						agent = await bridge.backend?.ensureAgent?.(key);
+						agentHandle = await bridge.backend?.ensureAgent?.(key);
 					} catch {
 						// fall through
 					}
 				}
+				const rawAgent = resolveRawAgent(agentHandle);
 				const goalsService = (ctx as unknown as { get?(name: string): unknown }).get?.("goals") as {
 					get?(agent: unknown): GoalSnapshotState | undefined;
 					create?(agent: unknown, req: { objective: string }): GoalSnapshotState;
@@ -1212,7 +1234,12 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					clear?(agent: unknown, ref: { id: string; revision: number }): unknown;
 				} | undefined;
 
-				const currentGoal = agent && goalsService?.get ? goalsService.get(agent) : undefined;
+				let currentGoal: GoalSnapshotState | undefined;
+				try {
+					currentGoal = rawAgent && goalsService?.get ? goalsService.get(rawAgent) : undefined;
+				} catch {
+					currentGoal = undefined;
+				}
 
 				if (!arg) {
 					if (currentGoal) {
@@ -1229,7 +1256,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						return true;
 					}
 					try {
-						goalsService?.pause?.(agent, { id: currentGoal.id, revision: currentGoal.revision });
+						goalsService?.pause?.(rawAgent, { id: currentGoal.id, revision: currentGoal.revision });
 						await durableReply(name, msg, "⏸ 目标已暂停。发送 /goal resume 或点击卡片按钮可恢复执行。");
 					} catch (err) {
 						await durableReply(name, msg, `暂停失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -1243,7 +1270,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						return true;
 					}
 					try {
-						goalsService?.resume?.(agent, { id: currentGoal.id, revision: currentGoal.revision });
+						goalsService?.resume?.(rawAgent, { id: currentGoal.id, revision: currentGoal.revision });
 						await durableReply(name, msg, "▶️ 目标已恢复执行。");
 					} catch (err) {
 						await durableReply(name, msg, `恢复失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -1257,7 +1284,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						return true;
 					}
 					try {
-						goalsService?.clear?.(agent, { id: currentGoal.id, revision: currentGoal.revision });
+						goalsService?.clear?.(rawAgent, { id: currentGoal.id, revision: currentGoal.revision });
 						await bridge.conversations?.stop(key);
 						await durableReply(name, msg, "🛑 目标已清除并停止当前任务轮次。");
 					} catch (err) {
@@ -1268,7 +1295,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 
 				// Custom objective: /goal <objective>
 				try {
-					const created = goalsService?.create?.(agent, { objective: arg });
+					const created = goalsService?.create?.(rawAgent, { objective: arg });
 					await durableReply(name, msg, `🎯 已启动目标：${arg}\n正在执行任务拆解，请留意后续进度看板...`);
 					if (created) {
 						await taskCardSyncer.updateGoal(key, created, wsRoot);
@@ -1279,6 +1306,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				return true;
 			}
 			case "stop": {
+
 
 				const key = bridge.conversationKeyFor(msg);
 				await bridge.conversations?.stop(key);
@@ -1628,15 +1656,16 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					pending.resolve({ id: questionId, selected: ["Approve"] });
 					const knownRoute = routeStore.all().find((r) => r.chatId === chatId);
 					const sessionKey = knownRoute?.sessionKey ?? (chatId ? `dm:${chatId}` : "");
-					const agent = sessionKey ? bridge.backend?.get(sessionKey) : undefined;
+					const agentHandle = sessionKey ? bridge.backend?.get(sessionKey) : undefined;
+					const rawAgent = resolveRawAgent(agentHandle);
 					const goalsService = (ctx as unknown as { get?(name: string): unknown }).get?.("goals") as {
 						create?(agent: unknown, req: { objective: string }): GoalSnapshotState;
 					} | undefined;
-					if (agent && goalsService?.create) {
+					if (rawAgent && goalsService?.create) {
 						try {
 							const opt = pending.options[0] as { label?: string; description?: string } | undefined;
 							const firstLine = (opt?.description ?? opt?.label ?? "").split("\n")[0] || "执行已批准的规划方案";
-							const goal = goalsService.create(agent, { objective: firstLine });
+							const goal = goalsService.create(rawAgent, { objective: firstLine });
 							const ws = convCfg.get(sessionKey).workspaceRoot ?? (getCfg().workspaceRoot || process.cwd());
 							await taskCardSyncer.updateGoal(sessionKey, goal, ws);
 						} catch {
@@ -1678,9 +1707,14 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					} | undefined;
 					const knownRoute = routeStore.all().find((r) => r.chatId === chatId);
 					const sessionKey = knownRoute?.sessionKey ?? (chatId ? `dm:${chatId}` : "");
-					const agent = sessionKey ? bridge.backend?.get(sessionKey) : undefined;
-					if (agent && planModeService?.set) {
-						planModeService.set(agent, false);
+					const agentHandle = sessionKey ? bridge.backend?.get(sessionKey) : undefined;
+					const rawAgent = resolveRawAgent(agentHandle);
+					if (rawAgent && planModeService?.set) {
+						try {
+							planModeService.set(rawAgent, false);
+						} catch {
+							// ignore
+						}
 					}
 					pending.resolve({ id: questionId, selected: ["Keep planning"] });
 				}
@@ -1694,12 +1728,20 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				let obj = "构建工程并运行全量测试验证";
 				if (tpl === "fix") obj = "诊断并修复当前工程中的已知问题与测试失败";
 				else if (tpl === "refactor") obj = "重构核心模块并补齐单元测试与文档";
-				const agent = sessionKey ? await bridge.backend?.ensureAgent?.(sessionKey) : undefined;
+				let agentHandle = sessionKey ? bridge.backend?.get(sessionKey) : undefined;
+				if (!agentHandle && sessionKey) {
+					try {
+						agentHandle = await bridge.backend?.ensureAgent?.(sessionKey);
+					} catch {
+						// fall through
+					}
+				}
+				const rawAgent = resolveRawAgent(agentHandle);
 				const goalsService = (ctx as unknown as { get?(name: string): unknown }).get?.("goals") as {
 					create?(agent: unknown, req: { objective: string }): GoalSnapshotState;
 				} | undefined;
 				try {
-					const created = goalsService?.create?.(agent, { objective: obj });
+					const created = rawAgent && goalsService?.create ? goalsService.create(rawAgent, { objective: obj }) : undefined;
 					await sender.sendText(chatId, `🎯 已设定目标：${obj}\n正在执行任务拆解，请留意任务看板...`);
 					if (created) {
 						await taskCardSyncer.updateGoal(sessionKey, created, wsRoot);
@@ -1709,6 +1751,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				}
 				return;
 			}
+
 
 			const sep = op.indexOf(":");
 			const cmd = sep === -1 ? op : op.slice(0, sep);

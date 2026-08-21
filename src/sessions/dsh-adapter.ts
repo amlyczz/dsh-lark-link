@@ -772,9 +772,11 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				// sync, void — errors surface via agent/error and turn/end(rejected)
 				agent.followup(message);
 			},
+			rawAgent: agent,
 			async cancel() {
 				agent.cancel({ kind: "user" });
 			},
+
 			onEvent(fn) {
 				const set =
 					listeners.get(key) ?? new Set<(e: SessionEventOut) => void>();
