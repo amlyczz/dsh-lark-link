@@ -20,10 +20,6 @@
 
 # 中文
 
-> 全网统一昵称：**小斯syzs** · B站 [@小斯syzs](https://space.bilibili.com/390211071) · 抖音 · 小红书 · 快手（全网同名）
-
-> 💬 **小斯syzs 邀请你加入飞书群** —— [点此一键加入](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=553i2f4a-5cc8-487f-95d3-3c4095bec0d9)
-
 **DeepSeek Harness × 飞书/Lark 双向桥接插件** —— 把你的 DSH 智能体装进飞书：扫码 30 秒上线、消息零丢失、卡片化交互、每飞书会话独立 Agent。手机上随时给 Agent 派任务、看结果、切模型切模式——不用守着终端。
 
 ## 🌟 为什么选 dsh-lark-link
@@ -141,7 +137,7 @@ dsh web
 | 配置键 | 默认 | 说明 |
 | ------ | ---- | ---- |
 | `groupPolicy` | `open` | 群聊触发策略：`open`（免 @ 全触发）/ `mention` / `keywords` / `reply` |
-| `groupKeywords` | `["lark","小斯"]` | `keywords` 模式下的触发词 |
+| `groupKeywords` | `["lark","bot"]` | `keywords` 模式下的触发词 |
 | `agentPreset` | `code` | Agent preset（shipped：standard/code/minimal/cordis，或 GUI 自建 id） |
 | `permissionMode` | `danger-full-access` | 权限：read-only / workspace-write / danger-full-access |
 | `streaming.enabled` | `false` | CardKit 流式卡片（开=逐字打印） |
@@ -157,7 +153,7 @@ dsh web
 ## 🩺 遇到问题？
 
 1. 飞书发 `/doctor`，得到 ZIP 诊断包（完整 session log + 脱敏配置 + ISSUE.md 模板）
-2. 把诊断包贴给任意 AI（或在 [飞书群](#-加入飞书群) 里发出来），即可快速定位
+2. 把诊断包贴给任意 AI（或在 GitHub Issue 中发出来），即可快速定位
 3. `/status` 可随时看连接 / Outbox / 补发 / 会话全链路健康
 
 ## 🛠 开发者
@@ -175,12 +171,6 @@ npm pack           # 产出可分发 tarball
 `host`（SDK 适配/认证）→ `inbound`（传输/群触发/断连补偿/Inbound WAL）→ `application`（命令路由/消息编排/诊断）→ `outbound`（Outbox/事件转发/卡片）→ `sessions`（每会话 Agent 管理）。
 
 CI（GitHub Actions）：push/PR 自动跑类型检查 + 247 项测试 + 构建；发布 npm 走 tag release 的 Publish workflow。
-
-## 💬 加入飞书群
-
-**小斯syzs 邀请你加入飞书群**，可以交流使用问题、反馈建议、一起玩 DSH × 飞书：
-
-👉 [https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=553i2f4a-5cc8-487f-95d3-3c4095bec0d9](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=553i2f4a-5cc8-487f-95d3-3c4095bec0d9)
 
 ## 📄 许可
 
@@ -293,7 +283,7 @@ Credentials (appId/appSecret) live in the DSH credentials service, never in conf
 
 ## 🩺 Troubleshooting
 
-Send `/doctor` in Feishu — you get a ZIP with the full session log, sanitized config, and an ISSUE.md template. Hand it to any AI (or drop it in the [Feishu group](#-join-the-feishu-group)). `/status` shows live connection / Outbox / replay health.
+Send `/doctor` in Feishu — you get a ZIP with the full session log, sanitized config, and an ISSUE.md template. Hand it to any AI (or open a GitHub Issue). `/status` shows live connection / Outbox / replay health.
 
 ## 🛠 Development
 
@@ -305,12 +295,6 @@ npm run dev:link && npm run check && npm test && npm run build
 
 Architecture (Cordis plugin, `dsh.bundle` format):
 `host` (SDK adapter/auth) → `inbound` (transport/group policy/compensation/Inbound WAL) → `application` (command routing/orchestration/diagnostics) → `outbound` (Outbox/event forwarding/cards) → `sessions` (per-chat agent management).
-
-## 💬 Join the Feishu group
-
-**小斯syzs** invites you to join the Feishu group — ask questions, share feedback, and play with DSH × Feishu together:
-
-👉 [https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=553i2f4a-5cc8-487f-95d3-3c4095bec0d9](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=553i2f4a-5cc8-487f-95d3-3c4095bec0d9)
 
 ## 📄 License
 
