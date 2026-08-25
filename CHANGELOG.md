@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.2
+
+### Fix: agent 完成但飞书无回复 — 事件丢失兜底、补发可救回、失败可见 (GH #9)
+- **turn/end 兜底投递（rescue）**：此前 `delivered` 只依赖 `assistant/message → outbox.enqueue` 这一条路径——桥进程在工具调用期间重载、订阅竞态或 enqueue 异常时，agent 轮次已完成但 outbox 无任何消息，飞书侧静默无回复。现在 dsh-adapter 会记住本轮最终 assistant 文本并附加在 `turn/end` 事件上（`finalText`）；event-forwarder 在本轮没有任何 durable 投递时于 turn/end 一次性把最终回复送入 durable outbox，并作为**第二条独立的 delivered 确认路径**回调 `onDelivered`。空输出 / `No response.` 不会误触发，已投递的轮次不会重复发送。
+- **启动补发先查会话日志（replay-salvage）**：WAL 记录重放不再盲目重新调用 agent（重放会整个重跑安装/长任务、烧 token）。启动重放前先检查该会话持久化日志中、请求接受时间**之后**的最终 assistant 输出——存在则直接从日志补投回复并标记 delivered（幂等 dedupe key `wal-salvage:<messageId>`），无可用输出才回落到重新分发。
+- **补发耗尽后标记 `failed`（不再伪装 accepted）**：重放次数达到上限的 WAL 记录现在转为终态 `failed` 并持久化；`/status`、状态详情与 Web 面板新增 `补发失败`/`入站补发失败`（`inboundFailed`）计数——`inboundPending=0` 不再掩盖「已耗尽重放次数但仍未回答」的记录。事后救回（delivered）仍优先于 failed。
+- **事件订阅时序回归护栏**：新增回归测试固化 conversation-manager 的不变量——`agent.onEvent()` 必须在任何 `followup()` 之前绑定，保证 turn 内同步发出的事件（含 followup 内首个事件）不会因订阅时序丢失。
+
 ## 0.5.0
 
 ### Feature: 飞书实时任务看板与目标驱动闭环系统 (Task & Goal Dashboard)

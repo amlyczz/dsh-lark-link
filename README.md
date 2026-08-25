@@ -161,7 +161,7 @@ dsh web
 ```bash
 npm run dev:link   # 链接本地 DSH checkout（类型检查/测试需要）
 npm run check      # tsc --noEmit
-npm test           # 247 项单元 + 集成测试
+npm test           # 264 项单元 + 集成测试
 npm run build      # tsdown → dist/（宿主 ESM + client bundle）
 npm pack           # 产出可分发 tarball
 ```
@@ -170,7 +170,7 @@ npm pack           # 产出可分发 tarball
 
 `host`（SDK 适配/认证）→ `inbound`（传输/群触发/断连补偿/Inbound WAL）→ `application`（命令路由/消息编排/诊断）→ `outbound`（Outbox/事件转发/卡片）→ `sessions`（每会话 Agent 管理）。
 
-CI（GitHub Actions）：push/PR 自动跑类型检查 + 247 项测试 + 构建；发布 npm 走 tag release 的 Publish workflow。
+CI（GitHub Actions）：push/PR 自动跑类型检查 + 264 项测试 + 构建；发布 npm 走 tag release 的 Publish workflow。
 
 ## 📄 许可
 
@@ -291,7 +291,7 @@ Send `/doctor` in Feishu — you get a ZIP with the full session log, sanitized 
 npm run dev:link && npm run check && npm test && npm run build
 ```
 
-247 unit + integration tests. GitHub Actions CI runs typecheck + tests + build on every push/PR; npm publishing rides the release-tagged Publish workflow.
+264 unit + integration tests. GitHub Actions CI runs typecheck + tests + build on every push/PR; npm publishing rides the release-tagged Publish workflow.
 
 Architecture (Cordis plugin, `dsh.bundle` format):
 `host` (SDK adapter/auth) → `inbound` (transport/group policy/compensation/Inbound WAL) → `application` (command routing/orchestration/diagnostics) → `outbound` (Outbox/event forwarding/cards) → `sessions` (per-chat agent management).

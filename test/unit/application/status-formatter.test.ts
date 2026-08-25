@@ -9,6 +9,7 @@ const status: BridgeStatus = {
   outboxPending: 3,
   outboxFailed: 1,
   inboundPending: 0,
+  inboundFailed: 0,
   sessions: 2,
 };
 
@@ -23,6 +24,17 @@ test("status-formatter: quarantine renders countdown", () => {
   const q: BridgeStatus = { ...status, connState: "quarantined", quarantinedUntil: Date.now() + 5 * 60_000 };
   const line = formatStatusLine(q);
   assert.ok(line.includes("熔断"));
+});
+
+test("GH #9: status surfaces failed inbound replays (inboundPending=0 must not lie)", () => {
+  const s: BridgeStatus = { ...status, inboundPending: 0, inboundFailed: 2 };
+  const line = formatStatusLine(s);
+  assert.ok(line.includes("补发失败: 2"), "status line shows failed replays: " + line);
+  const detail = statusDetailLines(s);
+  assert.ok(
+    detail.some((l) => l.includes("入站补发失败: 2")),
+    "detail lines show failed replays",
+  );
 });
 
 test("status-formatter: detail lines are exhaustive", () => {

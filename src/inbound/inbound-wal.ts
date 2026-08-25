@@ -32,7 +32,8 @@ import { basename, join } from "node:path";
 export type InboundWalState =
   | "accepted" // recorded, agent turn not yet proven delivered
   | "delivered" // the turn's durable output was enqueued to the outbox
-  | "replayed"; // re-dispatched at boot (may still need delivery, but attempts counted)
+  | "replayed" // re-dispatched at boot (may still need delivery, but attempts counted)
+  | "failed"; // GH #9: exhausted its replay budget without delivery — terminal, surfaced via failedCount()
 
 export interface InboundWalRecord {
   messageId: string;
@@ -73,6 +74,11 @@ export interface InboundWal {
   prune(): void;
   /** Forget a single record entirely (e.g. message could not be resolved). */
   remove(messageId: string): void;
+  /** GH #9: terminal-mark a record that can no longer be replayed (cap/
+   *  retention exhausted) so it stops masquerading as accepted. */
+  fail(messageId: string): void;
+  /** GH #9: how many records failed delivery (surfaced in /status). */
+  failedCount(): number;
   pendingCount(): number;
 }
 
@@ -142,15 +148,32 @@ export function createInboundWal(deps: InboundWalDeps): InboundWal {
     },
     delivered(messageId) {
       const rec = records.get(messageId);
+      // Delivered is the ground truth — it supersedes ANY prior state,
+      // including failed (GH #9: a late rescue/salvage can still answer a
+      // record whose replay budget was already exhausted).
       if (!rec || rec.state === "delivered") return;
       rec.state = "delivered";
+      persistAll();
+    },
+    fail(messageId) {
+      const rec = records.get(messageId);
+      if (!rec || rec.state === "delivered" || rec.state === "failed") return;
+      rec.state = "failed";
       persistAll();
     },
     markReplay(messageId) {
       const rec = records.get(messageId);
       if (!rec) return false;
       if (rec.state === "delivered") return false;
-      if (rec.attempts >= maxReplayAttempts) return false;
+      if (rec.attempts >= maxReplayAttempts) {
+        // GH #9: the attempt budget is gone — leave a terminal marker
+        // instead of lingering as accepted (invisible-but-unresolved).
+        if (rec.state !== "failed") {
+          rec.state = "failed";
+          persistAll();
+        }
+        return false;
+      }
       if (now() - rec.acceptedAt > replayRetentionMs) return false;
       rec.attempts += 1;
       rec.state = "replayed";
@@ -163,6 +186,7 @@ export function createInboundWal(deps: InboundWalDeps): InboundWal {
         .filter(
           (r) =>
             r.state !== "delivered" &&
+            r.state !== "failed" &&
             r.attempts < maxReplayAttempts &&
             r.acceptedAt >= cutoff,
         )
@@ -172,10 +196,11 @@ export function createInboundWal(deps: InboundWalDeps): InboundWal {
       const deliveredCutoff = now() - replayRetentionMs;
       let changed = false;
       for (const [id, r] of records) {
-        // Delivered records age out after retention; never-delivered records are
-        // retained only while still within the replay window and attempt budget.
+        // Delivered/failed records age out after retention; never-delivered
+        // records are retained only while still within the replay window and
+        // attempt budget.
         const expired =
-          r.state === "delivered"
+          r.state === "delivered" || r.state === "failed"
             ? r.acceptedAt < deliveredCutoff
             : r.acceptedAt < deliveredCutoff && r.attempts >= maxReplayAttempts;
         if (expired) {
@@ -188,6 +213,8 @@ export function createInboundWal(deps: InboundWalDeps): InboundWal {
     remove(messageId) {
       if (records.delete(messageId)) persistAll();
     },
+    failedCount: () =>
+      [...records.values()].filter((r) => r.state === "failed").length,
     pendingCount: () => records.size,
   };
 }

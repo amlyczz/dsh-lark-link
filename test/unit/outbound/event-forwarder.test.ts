@@ -134,6 +134,69 @@ test("forwarder: session without route is ignored", async () => {
   assert.equal(sent.length, 0);
 });
 
+// ---- GH #9: turn/end 兜底 (rescue) ---------------------------------------
+// The bridge lost an agent's completed reply because delivery relied on a
+// single path: assistant/message → outbox.enqueue. If that one event is lost
+// (plugin reload mid-turn, an enqueue throw, a route arriving late), turn/end
+// used to do nothing and the user never got a reply. turn/end now carries the
+// turn's final assistant text (finalText) and the forwarder enqueues it
+// durably whenever nothing was delivered this turn.
+
+test("forwarder: turn/end rescue enqueues finalText when no assistant/message was delivered (GH #9)", async () => {
+  const { fw, sent, doneCount } = makeForwarder({ streaming: false });
+  await fw.onSessionEvent("dm:ou_x", { type: "turn/start" });
+  // No assistant/message reached the forwarder (event lost / reload mid-turn).
+  await fw.onSessionEvent("dm:ou_x", { type: "turn/end", reason: "complete", finalText: "skill installed" });
+  await new Promise((r) => setTimeout(r, 200));
+  const texts = sent.filter((p) => (p as { kind: string }).kind === "text");
+  assert.equal(
+    texts.some((t) => (t as { text: string }).text === "skill installed"),
+    true,
+    "turn/end rescue must durably deliver the final text",
+  );
+  assert.equal(doneCount(), 1, "rescued output still issues DONE");
+});
+
+test("forwarder: turn/end rescue does not duplicate an already-delivered assistant/message", async () => {
+  const { fw, sent } = makeForwarder({ streaming: false });
+  await fw.onSessionEvent("dm:ou_x", { type: "assistant/message", text: "hello" });
+  await fw.onSessionEvent("dm:ou_x", { type: "turn/end", reason: "complete", finalText: "hello" });
+  await new Promise((r) => setTimeout(r, 200));
+  const texts = sent.filter((p) => (p as { kind: string }).kind === "text" && (p as { text: string }).text === "hello");
+  assert.equal(texts.length, 1, "exactly one delivery — rescue must not double-send");
+});
+
+test("forwarder: turn/end rescue skips empty and 'No response.' finals (no DONE)", async () => {
+  const { fw, sent, doneCount } = makeForwarder({ streaming: false });
+  await fw.onSessionEvent("dm:ou_x", { type: "turn/end", reason: "complete", finalText: "" });
+  await fw.onSessionEvent("dm:ou_x", { type: "turn/end", reason: "complete", finalText: "No response." });
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(sent.length, 0, "nothing rescued for empty finals");
+  assert.equal(doneCount(), 0, "no DONE without real output");
+});
+
+test("forwarder: turn/end rescue marks the triggering request delivered (independent confirmation path)", async () => {
+  const deliveredKeys: string[] = [];
+  const sender: OutboxSender = { async deliver() { return { ok: true }; } };
+  const outbox: Outbox = createOutbox({
+    dir: tempDir("fw-rescue-deliv-"),
+    sender,
+    cfg: { maxAttempts: 5, backoffMaxMs: 100, retainDays: 7, pendingCap: 1000, blobThreshold: 24_000 },
+  });
+  outbox.rebuildFromDisk();
+  outbox.start();
+  const fw = createEventForwarder({
+    outbox,
+    routeFor: (key) => (key === "dm:ou_x" ? route : undefined),
+    streamFor: () => undefined,
+    cfg: () => ({ streamingEnabled: false }),
+    onDelivered: (key) => deliveredKeys.push(key),
+  });
+  await fw.onSessionEvent("dm:ou_x", { type: "turn/end", reason: "complete", finalText: "late rescue" });
+  await new Promise((r) => setTimeout(r, 200));
+  assert.deepEqual(deliveredKeys, ["dm:ou_x"], "rescue is a second, independent delivered path (GH #9)");
+});
+
 test("forwarder: finalizeSession flushes pending stream-only text", async () => {
   const { fw, sent } = makeForwarder();
   await fw.onSessionEvent("dm:ou_x", { type: "assistant/chunk", text: "pending text" });

@@ -119,6 +119,10 @@ export interface BridgeStatus {
   /** Accepted-but-undelivered inbound requests awaiting (possible) replay — a
    *  crash/restart mid-turn re-triggers these. Zero when everything answered. */
   inboundPending: number;
+  /** GH #9: inbound requests that exhausted their replay budget without a
+   *  delivery (terminal). Shown separately so inboundPending=0 is never
+   *  mistaken for "everything answered". */
+  inboundFailed: number;
   sessions: number;
   quarantinedUntil?: number;
   quarantinedReason?: string;

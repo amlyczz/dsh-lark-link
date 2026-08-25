@@ -324,6 +324,59 @@ test("adapter: assistant/message text is extracted from content blocks", async (
 	assert.equal(msg.text, "hi there");
 });
 
+test("adapter: turn/end carries the turn's final assistant text (GH #9 rescue)", async () => {
+	const registry = fakeRegistry();
+	const backend = mkBackend(ctxOf(registry, undefined));
+	const handle = await backend.ensureAgent("dm:ou_user_1");
+	const events: Array<{ type: string; text?: string; reason?: string; finalText?: string }> = [];
+	handle.onEvent((e) => events.push(e as never));
+
+	const agent = registry.agents.get(handle.sessionId) as {
+		ctx: { emit(event: string, ev: unknown): void };
+	};
+	agent.ctx.emit("session/event", {
+		type: "turn/start",
+		seq: 0,
+		time: Date.now(),
+		data: {},
+	});
+	agent.ctx.emit("session/event", {
+		type: "assistant/message",
+		seq: 1,
+		time: Date.now(),
+		data: { message: { content: [{ type: "text", text: "skill installed" }] } },
+	});
+	agent.ctx.emit("session/event", {
+		type: "turn/end",
+		seq: 2,
+		time: Date.now(),
+		data: { reason: { kind: "completed" } },
+	});
+
+	const end = events.find((e) => e.type === "turn/end");
+	assert.ok(end, "turn/end forwarded");
+	assert.equal(end.reason, "completed");
+	assert.equal(
+		end.finalText,
+		"skill installed",
+		"turn/end must carry the final assistant text so the forwarder can rescue lost deliveries",
+	);
+});
+
+test("adapter: memory backend turn/end also carries finalText (parity for tests/fallback)", async () => {
+	const { createMemoryDshBackend } = await import("../../../src/sessions/dsh-session-backend.ts");
+	const backend = createMemoryDshBackend({ autoReply: () => "mock final answer" });
+	const handle = await backend.ensureAgent("dm:ou_x");
+	const events: Array<{ type: string; finalText?: string }> = [];
+	handle.onEvent((e) => events.push(e));
+	await handle.followup("hello");
+	await new Promise((r) => setTimeout(r, 50));
+	const end = events.find((e) => e.type === "turn/end");
+	assert.ok(end, "memory backend emits turn/end");
+	assert.equal(end.finalText, "mock final answer");
+});
+
+
 test("adapter: todo/write and goal/change events are correctly forwarded to bridge listeners", async () => {
 	const registry = fakeRegistry();
 	const backend = mkBackend(ctxOf(registry, undefined));

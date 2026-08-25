@@ -269,6 +269,11 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 	const keyBySession = new Map<string, string>();
 	const listeners = new Map<string, Set<(e: SessionEventOut) => void>>();
 	const disposers = new Map<string, () => void>();
+	// GH #9: last assistant text of the CURRENT turn per conversation key.
+	// turn/start clears it, assistant/message refreshes it, turn/end carries
+	// it — the outbound forwarder uses it to rescue a delivery whose
+	// assistant/message event was lost (bridge reload mid-turn, race).
+	const lastAssistantText = new Map<string, string>();
 	// Per-key in-flight agent creation. ensureAgent(key) can be called
 	// concurrently (an outbox outbound re-reply racing a live inbound message
 	// right after a DSH restart). Both calls would otherwise see an empty
@@ -469,6 +474,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		// belonged to is gone. (imageUnsupported intentionally persists:
 		// the model's lack of image support does not change with the session.)
 		pendingImageRetry.delete(key);
+		lastAssistantText.delete(key);
 		runNonce = `${Date.now().toString(36)}${Math.random()
 			.toString(36)
 			.slice(2, 6)}`;
@@ -973,6 +979,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				keyBySession.delete(sessionId);
 				listeners.delete(key);
 				pendingImageRetry.delete(key);
+				lastAssistantText.delete(key);
 			},
 		};
 		tracked.set(key, { handle, lastUsedAt: Date.now() });
@@ -988,6 +995,19 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				}
 				const out = toSessionEventOut(ev);
 				if (!out) return;
+				// GH #9 rescue bookkeeping: track the current turn's final
+				// assistant text so turn/end can carry it downstream even if
+				// the assistant/message event itself was lost between here and
+				// the outbound forwarder.
+				if (out.type === "turn/start") lastAssistantText.delete(key);
+				if (out.type === "assistant/message" && out.text.trim() !== "") {
+					lastAssistantText.set(key, out.text);
+				}
+				if (out.type === "turn/end" && out.finalText === undefined) {
+					const final = lastAssistantText.get(key);
+					if (final !== undefined) out.finalText = final;
+					lastAssistantText.delete(key);
+				}
 				const set = listeners.get(key);
 				if (set) for (const fn of set) fn(out);
 			},

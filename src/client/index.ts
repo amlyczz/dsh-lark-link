@@ -75,6 +75,7 @@ interface StatusPayload {
 	configured?: boolean;
 	outboxPending?: number;
 	outboxFailed?: number;
+	inboundFailed?: number;
 }
 
 type PanelState =
@@ -217,6 +218,8 @@ export function apply(ctx: ClientContext): void {
 			extras.push(`待发 ${st.outboxPending}`);
 		if (st?.outboxFailed && st.outboxFailed > 0)
 			extras.push(`失败 ${st.outboxFailed}`);
+		if (st?.inboundFailed && st.inboundFailed > 0)
+			extras.push(`补发失败 ${st.inboundFailed}`);
 
 		const banner = h(
 			"div",

@@ -110,6 +110,43 @@ test("remove forgets a single record", () => {
   assert.deepEqual(new Set(ids), new Set(["rm2"]));
 });
 
+test("GH #9: record that exhausts replay attempts is marked failed (not left accepted)", () => {
+  const dir = tmpdir();
+  const wal = createInboundWal({ dir, maxReplayAttempts: 2 });
+  wal.accept(base("f1"));
+  assert.equal(wal.markReplay("f1"), true); // attempt 1
+  assert.equal(wal.markReplay("f1"), true); // attempt 2
+  // Attempt cap reached: the record must transition to a TERMINAL failed
+  // state — before GH #9 it lingered as accepted/replayed and became
+  // invisible (inboundPending=0) while still unresolved.
+  assert.equal(wal.markReplay("f1"), false); // cap → failed
+  assert.equal(wal.failedCount(), 1, "over-cap record counted as failed");
+  assert.equal(wal.pendingReplays().length, 0, "failed records never replay again");
+});
+
+test("GH #9: failed records survive a reload as failed (diagnosable, not hidden)", () => {
+  const dir = tmpdir();
+  const wal = createInboundWal({ dir, maxReplayAttempts: 1 });
+  wal.accept(base("f2"));
+  wal.markReplay("f2"); // attempt 1 (cap)
+  wal.markReplay("f2"); // over cap → failed
+  const wal2 = createInboundWal({ dir });
+  assert.equal(wal2.failedCount(), 1, "failed state persisted across reload");
+  assert.equal(wal2.pendingReplays().length, 0);
+});
+
+test("GH #9: delivered still wins over failed (late rescue marks it delivered)", () => {
+  const dir = tmpdir();
+  const wal = createInboundWal({ dir, maxReplayAttempts: 1 });
+  wal.accept(base("f3"));
+  wal.markReplay("f3");
+  wal.markReplay("f3"); // → failed
+  wal.delivered("f3"); // rescue/salvage answered it after all
+  assert.equal(wal.failedCount(), 0, "delivered supersedes failed");
+  assert.equal(wal.pendingReplays().length, 0);
+});
+
+
 test("persisted file uses 0600 mode", () => {
   const dir = tmpdir();
   const wal = createInboundWal({ dir });

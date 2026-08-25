@@ -9,7 +9,7 @@ export interface StatusStore {
   update(patch: Partial<BridgeStatus>): BridgeStatus;
   setConn(state: ConnState, extra?: Partial<BridgeStatus>): BridgeStatus;
   /** Refresh any subset of the bridge counters (outbox + inbound replay). */
-  refreshCounters(counters: Partial<Pick<BridgeStatus, "outboxPending" | "outboxFailed" | "inboundPending">>): void;
+  refreshCounters(counters: Partial<Pick<BridgeStatus, "outboxPending" | "outboxFailed" | "inboundPending" | "inboundFailed">>): void;
 }
 
 export function createStatusStore(file: string | undefined, now: () => number = Date.now): StatusStore {
@@ -18,6 +18,7 @@ export function createStatusStore(file: string | undefined, now: () => number = 
     outboxPending: 0,
     outboxFailed: 0,
     inboundPending: 0,
+    inboundFailed: 0,
     sessions: 0,
     wsReady: false,
   };

@@ -17,7 +17,7 @@ export type BridgeSessionEvent =
   | { type: "turn/start" }
   | { type: "assistant/chunk"; text: string }
   | { type: "assistant/message"; text: string }
-  | { type: "turn/end"; reason: string }
+  | { type: "turn/end"; reason: string; finalText?: string }
   | { type: "tool/call"; name: string }
   | { type: "tool/result"; name: string; error?: { name: string; code: string } }
   | { type: "todo/write"; todos: TodoItemState[] }
@@ -170,6 +170,32 @@ export function createEventForwarder(deps: EventForwarderDeps): EventForwarder {
             // ignore
           }
           st.stream = undefined;
+        }
+        // GH #9 兜底 (rescue): the turn produced assistant output but nothing
+        // was durably delivered THIS turn — the assistant/message event was
+        // lost (plugin reload mid-turn, subscription re-race), outbox.enqueue
+        // threw, or the route only appeared after the message. The adapter
+        // attaches the session's final assistant text to turn/end; enqueue it
+        // now so the user still gets the reply instead of silence. This is
+        // also a SECOND, independent path to onDelivered (the inbound WAL no
+        // longer depends solely on the assistant/message callback).
+        const rescue = (event.finalText ?? "").trim() !== "" ? event.finalText : "";
+        if (!st.hasOutput && rescue && rescue !== "No response.") {
+          try {
+            await deps.outbox.enqueue({
+              dedupeKey: `${sessionKey}:rescue:${rescue.length}:${Date.now()}`,
+              laneKey: sessionKey,
+              route: routeRefFor(route),
+              kind: "assistant-output",
+              payload: { kind: "text", text: rescue },
+            });
+            st.hasOutput = true;
+            deps.onDelivered?.(sessionKey);
+          } catch {
+            // Rescue is best-effort: the record stays undelivered in the
+            // inbound WAL, so boot replay still applies. Never break the
+            // rest of turn/end handling (markDone) on a rescue failure.
+          }
         }
         const target = deps.streamFor(sessionKey);
         if (target && st.hasOutput && !st.doneIssued) {

@@ -121,6 +121,7 @@ function buildBridge(
     messageHandler,
     feishuSent,
     conversations,
+    forwarder,
     async consume(msg: FeishuInboundMessage) {
       const key = `dm:${msg.chatId}`;
       routeStore.upsert({
@@ -250,6 +251,48 @@ test("integration replay: accepted-but-undelivered request is re-triggered on bo
   assert.ok(
     b.feishuSent.some((s) => s.text.includes("这条请求在重启前被打断")),
     `replayed request produced a durable reply, got ${JSON.stringify(b.feishuSent)}`,
+  );
+  await b.stop();
+});
+
+test("integration replay GH #9: turn completed but assistant/message lost — turn/end rescue answers the user", async () => {
+  const dir = tempDir("it-replay-gh9-");
+  const b = buildBridge(dir, {});
+
+  // The reported bug: the request was accepted and the agent turn COMPLETED,
+  // but the bridge's forwarder never saw the assistant/message event (process
+  // reload mid-turn). Only turn/end arrives, carrying the session's final text.
+  b.inboundWal.accept({
+    messageId: "om_x100b",
+    sessionKey: "dm:ou_user4",
+    chatId: "ou_user4",
+    chatType: "p2p",
+    senderOpenId: "ou_user4",
+    text: "highimpact-dev/skill-shield安装这个",
+  });
+  b.routeStore.upsert({
+    sessionKey: "dm:ou_user4",
+    chatId: "ou_user4",
+    chatType: "p2p",
+    lastMessageId: "om_x100b",
+    updatedAt: Date.now(),
+  });
+  await b.forwarder.onSessionEvent("dm:ou_user4", { type: "turn/start" });
+  await b.forwarder.onSessionEvent("dm:ou_user4", {
+    type: "turn/end",
+    reason: "complete",
+    finalText: "skill-shield 已安装完成",
+  });
+  await new Promise((r) => setTimeout(r, 300));
+
+  assert.ok(
+    b.feishuSent.some((s) => s.text.includes("skill-shield 已安装完成")),
+    `user got the reply via the turn/end rescue, got ${JSON.stringify(b.feishuSent)}`,
+  );
+  assert.equal(
+    b.inboundWal.pendingReplays().some((r) => r.messageId === "om_x100b"),
+    false,
+    "rescue marked the WAL record delivered (independent confirmation path)",
   );
   await b.stop();
 });

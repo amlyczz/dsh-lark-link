@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createMemoryDshBackend } from "../../../src/sessions/dsh-session-backend.ts";
+import type { SessionEventOut } from "../../../src/sessions/dsh-session-backend.ts";
 import { createConversationManager } from "../../../src/sessions/conversation-manager.ts";
 import type { FeishuInboundMessage } from "../../../src/common/types.ts";
 
@@ -19,6 +20,53 @@ const mkMsg = (
 	text,
 	mentions: [],
 	timestamp: Date.now(),
+});
+
+test("manager GH #9 regression: event subscription is attached BEFORE followup runs", async () => {
+	// Guarantee the invariant the issue calls out: any event the agent emits
+	// during its turn — including ones emitted synchronously inside followup —
+	// must reach onEvent. A listener attached after followup() would miss the
+	// whole turn (the exact "session log has the reply, bridge outbox does not"
+	// failure mode).
+	const seen: string[] = [];
+	const base = createMemoryDshBackend({ autoReply: () => "ok" });
+	const backend = {
+		...base,
+		async ensureAgent(key: string) {
+			const h = await base.ensureAgent(key);
+			return {
+				...h,
+				async followup(text: string, atts?: Parameters<typeof h.followup>[1]) {
+					// Emit an event SYNCHRONOUSLY at the very start of the turn:
+					// only an already-attached listener can observe it.
+					for (const fn of synclisteners) fn({ type: "turn/start" } as SessionEventOut);
+					return h.followup(text, atts);
+				},
+				onEvent(fn: (e: SessionEventOut) => void) {
+					synclisteners.add(fn);
+					const detach = h.onEvent(fn); // underlying turn events
+					return () => {
+						synclisteners.delete(fn);
+						detach();
+					};
+				},
+			};
+		},
+	};
+	const synclisteners = new Set<(e: SessionEventOut) => void>();
+	const cm = createConversationManager({
+		backend,
+		maxSessions: 8,
+		idleTtlMs: 60_000,
+		onEvent: (_key, e) => seen.push(e.type),
+	});
+	await cm.handleMessage(mkMsg("ou_order"));
+	await new Promise((r) => setTimeout(r, 50));
+	assert.ok(
+		seen.includes("turn/start"),
+		`synchronous turn-start emitted inside followup was observed (seen=${seen.join(",")})`,
+	);
+	assert.ok(seen.includes("turn/end"), "whole turn observable");
 });
 
 test("manager: per-conversation keys isolate dm and group", () => {

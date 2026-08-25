@@ -52,6 +52,7 @@ import { createConfigStore, HOT_RELOADABLE, buildHotReloadPatch } from "./common
 import { createLogger, type Logger } from "./common/logger.ts";
 import { createDedupeStore } from "./common/dedupe-store.ts";
 import { createInboundWal } from "./inbound/inbound-wal.ts";
+import { createReplaySalvage } from "./inbound/replay-salvage.ts";
 import { createQuotaGovernor } from "./common/quota-governor.ts";
 import {
 	helpCard,
@@ -1810,6 +1811,23 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		}
 	};
 
+	// GH #9: salvage answers a boot-replayed request from the session log's
+	// EXISTING final assistant output (the turn had already completed; only
+	// the bridge event was lost) instead of blindly re-invoking the agent.
+	const sessionPersistenceService = (
+		ctx as unknown as { get?(name: string): unknown }
+	).get?.("sessionPersistence") as
+		| {
+				load?(id: string): Promise<{ events?: readonly unknown[] } | undefined>;
+		  }
+		| undefined;
+	const replaySalvage = createReplaySalvage({
+		loadSession: async (id) => sessionPersistenceService?.load?.(id),
+		enqueue: (input) => outbox.enqueue(input),
+		wal: inboundWal,
+		logger,
+	});
+
 	const messageHandler = createMessageHandler({
 		ctx: bridge,
 		commands: commandRouter,
@@ -2056,6 +2074,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 			outboxPending: outbox.pendingCount(),
 			outboxFailed: outbox.failedCount(),
 			inboundPending: inboundWal.pendingReplays().length,
+			inboundFailed: inboundWal.failedCount(),
 		});
 		status.setConn("connected", {
 			wsReady: transport.wsReady(),
@@ -2073,10 +2092,20 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 		// blocks bridge startup.
 		void (async () => {
 			let replayed = 0;
+			let salvaged = 0;
 			try {
 				inboundWal.prune();
 				for (const rec of inboundWal.pendingReplays()) {
 					if (!inboundWal.markReplay(rec.messageId)) continue;
+					// GH #9: the previous run may have COMPLETED the agent turn —
+					// the session log already holds the final assistant output and
+					// only the bridge event was lost. Answer from the log first;
+					// re-run the agent only when no usable output exists.
+					const sessionId = convCfg.get(rec.sessionKey).activeSessionId;
+					if (await replaySalvage.salvage(rec, sessionId)) {
+						salvaged++;
+						continue;
+					}
 					try {
 						await messageHandler.handleCompensated({
 							messageId: rec.messageId,
@@ -2100,12 +2129,16 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 						);
 					}
 				}
-				if (replayed > 0)
-					logger.info(`inbound replay re-dispatched ${replayed} request(s)`);
-				// Reflect the post-replay pending count (requests that could not be
-				// immediately answered stay visible in /status for transparency).
+				if (replayed > 0 || salvaged > 0)
+					logger.info(
+						`inbound replay: ${salvaged} answered from session logs, ${replayed} re-dispatched`,
+					);
+				// Reflect the post-replay counts (requests that could not be
+				// immediately answered stay visible in /status for transparency;
+				// GH #9: exhausted ones surface as failed instead of hiding).
 				status.refreshCounters({
 					inboundPending: inboundWal.pendingReplays().length,
+					inboundFailed: inboundWal.failedCount(),
 				});
 			} catch (err) {
 				logger.warn(
@@ -2688,6 +2721,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					outboxPending: outbox.pendingCount(),
 					outboxFailed: outbox.failedCount(),
 					inboundPending: inboundWal.pendingReplays().length,
+					inboundFailed: inboundWal.failedCount(),
 				});
 		}, 60_000);
 		sweep.unref?.();

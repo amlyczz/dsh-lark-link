@@ -32,7 +32,7 @@ export type SessionEventOut =
   | { type: "turn/start" }
   | { type: "assistant/chunk"; text: string }
   | { type: "assistant/message"; text: string }
-  | { type: "turn/end"; reason: string }
+  | { type: "turn/end"; reason: string; finalText?: string }
   | { type: "tool/call"; name: string }
   | { type: "tool/result"; name: string; error?: { name: string; code: string } }
   | { type: "todo/write"; todos: TodoItemState[] }
@@ -154,7 +154,10 @@ export function createMemoryDshBackend(
           if (opts.latencyMs) await new Promise((r) => setTimeout(r, opts.latencyMs));
           emit({ type: "assistant/chunk", text: content.slice(mid) });
           emit({ type: "assistant/message", text: content });
-          emit({ type: "turn/end", reason: "complete" });
+          // Parity with the real adapter: turn/end carries the final text
+          // (GH #9 rescue path) so tests exercising the forwarder see the
+          // same event surface as live DSH.
+          emit({ type: "turn/end", reason: "complete", finalText: content });
           busy = false;
         };
         void stream();
