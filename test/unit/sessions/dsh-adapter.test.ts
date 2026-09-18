@@ -13,7 +13,7 @@ test("adapter: cwd/preset/modelSelection are resolved PER KEY (no cross-talk)", 
 		sessionPrefix: "lark-link",
 		logger: silentLogger,
 		cwd: (key) => (key === "dm:ou_a" ? "/ws/a" : "/ws/default"),
-		preset: (key) => (key === "dm:ou_b" ? "ptc" : "code"),
+		preset: (key) => (key === "dm:ou_b" ? "minimal" : "ptc"),
 		modelSelection: {
 			currentFor: (key) => (key === "dm:ou_a" ? selA : selB),
 		},
@@ -32,12 +32,73 @@ test("adapter: cwd/preset/modelSelection are resolved PER KEY (no cross-talk)", 
 	};
 	// key A: its own cwd, default preset, its own model
 	assert.equal(a.meta?.cwd, "/ws/a");
-	assert.equal(a.meta?.agentPreset, "code");
+	assert.equal(a.meta?.agentPreset, "ptc");
 	assert.deepEqual(a.agentOptions, { provider: "p1", model: "m1" });
-	// key B: default cwd, "ptc" alias preset, its own model — NOT A's values
+	// key B: default cwd, its own preset, its own model — NOT A's values
 	assert.equal(b.meta?.cwd, "/ws/default");
-	assert.equal(b.meta?.agentPreset, "ptc");
+	assert.equal(b.meta?.agentPreset, "minimal");
 	assert.deepEqual(b.agentOptions, { provider: "p2", model: "m2" });
+});
+
+test("adapter: historical agentPreset alias `code` is normalized to DSH `ptc` (GH #11)", async () => {
+	const registry = fakeRegistry();
+	const mounts: string[] = [];
+	const agentPresets = {
+		async mount(_ctx: unknown, presetId: string) {
+			mounts.push(presetId);
+		},
+		async list() {
+			return [
+				{ id: "standard", trust: "system" },
+				{ id: "ptc", trust: "system" },
+				{ id: "minimal", trust: "system" },
+				{ id: "cordis", trust: "system" },
+			];
+		},
+	};
+	const backend = createDshAdapter({
+		ctx: ctxOf(registry, undefined, agentPresets),
+		sessionPrefix: "lark-link",
+		logger: silentLogger,
+		// Old configs / conversation overrides still store `code`.
+		preset: () => "code",
+	});
+	await backend.ensureAgent("dm:ou_legacy");
+
+	assert.equal(registry.created.length, 1);
+	const created = registry.created[0] as {
+		meta?: { agentPreset?: string };
+	};
+	assert.equal(
+		created.meta?.agentPreset,
+		"ptc",
+		"create meta must carry a DSH-valid preset id, not the alias",
+	);
+	// mount must also receive ptc (the old mapping wrote code here and DSH threw)
+	await new Promise((r) => setTimeout(r, 0));
+	assert.deepEqual(mounts, ["ptc"]);
+});
+
+test("adapter: resumeAgent normalizes stored legacy preset `code` → `ptc`", async () => {
+	const registry = fakeRegistry();
+	const mounts: string[] = [];
+	const agentPresets = {
+		async mount(_ctx: unknown, presetId: string) {
+			mounts.push(presetId);
+		},
+	};
+	const backend = createDshAdapter({
+		ctx: ctxOf(registry, undefined, agentPresets),
+		sessionPrefix: "lark-link",
+		logger: silentLogger,
+	});
+
+	const handle = await backend.resumeAgent("dm:ou_r2", "hist-legacy", {
+		preset: "code",
+	});
+	assert.equal(handle.sessionId, "hist-legacy");
+	await new Promise((r) => setTimeout(r, 0));
+	assert.deepEqual(mounts, ["ptc"]);
 });
 
 test("adapter: currentFor entries are LIVE objects — mutation switches the model", async () => {
@@ -511,7 +572,7 @@ test("adapter: listPresets maps the live DSH roster (shipped + custom)", async (
 		async list() {
 			return [
 				{ id: "standard", trust: "system", name: "标准模式", description: "全能" },
-				{ id: "code", trust: "system" },
+				{ id: "ptc", trust: "system" },
 				{ id: "aaa", trust: "user", name: "AAA 模式", description: "示例描述" },
 				{ id: "bbb", trust: "user", broken: "示例原因" },
 			];
@@ -522,7 +583,7 @@ test("adapter: listPresets maps the live DSH roster (shipped + custom)", async (
 	const presets = await backend.listPresets();
 	assert.deepEqual(presets, [
 		{ id: "standard", trust: "system", label: "标准模式", desc: "全能" },
-		{ id: "code", trust: "system", label: "code" },
+		{ id: "ptc", trust: "system", label: "ptc" },
 		{ id: "aaa", trust: "user", label: "AAA 模式", desc: "示例描述" },
 		{ id: "bbb", trust: "user", label: "bbb", broken: "示例原因" },
 	]);

@@ -85,10 +85,11 @@ export interface FeishuConfig {
 	workspaceRoot: string;
 	/**
 	 * Agent preset for bridge sessions. Any preset id the deployment supplies —
-	 * the shipped `standard | code | minimal | cordis`, OR a locally authored
+	 * the shipped `standard | ptc | minimal | cordis`, OR a locally authored
 	 * (user) preset id created in the DSH GUI — is valid. `/mode` renders the
 	 * live roster (shipped + custom); `/lark-config agentPreset=<id>` accepts
-	 * any id verbatim.
+	 * any id verbatim. Historical bridge alias `code` is normalized to `ptc`
+	 * at use time (GH #11) — DSH has no `code` preset.
 	 */
 	agentPreset: string;
 	/** Default DSH permission preset (read-only | workspace-write | danger-full-access). */
@@ -145,9 +146,27 @@ export const DEFAULT_CONFIG: FeishuConfig = {
 	maxSessions: 32,
 	allowlist: [],
 	workspaceRoot: "",
-	agentPreset: "code",
+	agentPreset: "ptc",
 	permissionMode: "danger-full-access",
 };
+
+/**
+ * Map a configured agent-preset id onto one DSH's agent-presets service
+ * accepts. DSH ships `standard | ptc | minimal | cordis` — there is no
+ * `code`. Older bridge configs/UI used `code` for what DSH calls `ptc`
+ * (GH #11); keep accepting the alias so stored overrides still work.
+ */
+export function normalizeAgentPreset(id: string): string {
+	return id === "code" ? "ptc" : id;
+}
+
+/** DSH's shipped agent-presets roster (ids). Custom/user presets are extra. */
+export const SHIPPED_AGENT_PRESET_IDS: readonly string[] = [
+	"standard",
+	"ptc",
+	"minimal",
+	"cordis",
+];
 
 /** Keys that may be hot-reloaded via /lark-config (whitelist, never credentials). */
 export const HOT_RELOADABLE: ReadonlyArray<keyof FeishuConfig> = [

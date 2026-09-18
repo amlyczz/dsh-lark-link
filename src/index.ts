@@ -48,7 +48,12 @@ import {
 	statusDetailLines,
 } from "./application/status-formatter.ts";
 import { createStatusStore } from "./common/connection-status.ts";
-import { createConfigStore, HOT_RELOADABLE, buildHotReloadPatch } from "./common/config.ts";
+import {
+	createConfigStore,
+	HOT_RELOADABLE,
+	buildHotReloadPatch,
+	normalizeAgentPreset,
+} from "./common/config.ts";
 import { createLogger, type Logger } from "./common/logger.ts";
 import { createDedupeStore } from "./common/dedupe-store.ts";
 import { createInboundWal } from "./inbound/inbound-wal.ts";
@@ -248,9 +253,12 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				convCfg.get(key).workspaceRoot ??
 				(getCfg().workspaceRoot || process.cwd()),
 			preset: (key: string) => {
+				// Conversation override ?? bridge default. Historical alias
+				// `code` maps onto DSH's real id `ptc` (GH #11 — reverse of
+				// the old mapping, which turned valid `ptc` into invalid `code`).
 				const p =
-					convCfg.get(key).preset ?? (getCfg().agentPreset || "code");
-				return p === "ptc" ? "code" : p; // 别名兼容
+					convCfg.get(key).preset ?? (getCfg().agentPreset || "ptc");
+				return normalizeAgentPreset(p);
 			},
 			modelSelection: {
 				currentFor: (key: string) => {
@@ -929,6 +937,15 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				if (rawVal === "true" || rawVal === "false") val = rawVal === "true";
 				else if (rawVal !== "" && !Number.isNaN(Number(rawVal)))
 					val = Number(rawVal);
+				// GH #11: persist DSH's real preset id; accept historical `code`.
+				let presetAliasNote = "";
+				if (key === "agentPreset" && typeof val === "string") {
+					const normalized = normalizeAgentPreset(val);
+					if (normalized !== val) {
+						presetAliasNote = `（已映射 ${val} → ${normalized}：DSH 无 code preset）`;
+					}
+					val = normalized;
+				}
 				// Dotted paths (streaming.enabled) resolve into a NESTED patch —
 				// previously only exact top-level whitelist names matched, so
 				// `/lark-config streaming.enabled=true` answered 不可热改.
@@ -944,7 +961,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 					);
 					return true;
 				}
-				await durableReply(name, msg, `已更新 ${key}=${JSON.stringify(val)}`);
+				await durableReply(name,
+					msg,
+					`已更新 ${key}=${JSON.stringify(val)}${presetAliasNote}`,
+				);
 				return true;
 			}
 			case "support":
@@ -1451,20 +1471,34 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				const live = backend ? await backend.listPresets() : [];
 				const roster = live.length > 0 ? live : [...AGENT_PRESETS];
 				const arg = _rawInput.trim().toLowerCase();
+				// Accept historical alias `code` as `ptc` (GH #11).
+				const requested = arg ? normalizeAgentPreset(arg) : "";
 				if (!arg) {
+					const current = normalizeAgentPreset(getCfg().agentPreset);
+					const unknownCurrent =
+						live.length > 0 && !live.some((p) => p.id === current);
 					await sender.sendCard(
 						msg.chatId,
 						withButtons(
-							modeCard(getCfg().agentPreset, roster),
+							modeCard(current, roster),
 							roster
 								.filter((p) => !p.broken)
 								.map((p) => button(p.label, { op: `mode:${p.id}` })),
 						),
 					);
+					if (unknownCurrent) {
+						await durableReply(
+							name,
+							msg,
+							`⚠️ 当前配置 agentPreset=${current} 不在 DSH roster（可用: ${live
+								.map((p) => p.id)
+								.join(", ")}）——新建 agent 会失败。请点选模式切换，或 \`/lark-config agentPreset=<id>\`。`,
+						);
+					}
 					return true;
 				}
-				if (!roster.some((p) => p.id === arg)) {
-					await durableReply(name, 
+				if (!roster.some((p) => p.id === requested)) {
+					await durableReply(name,
 						msg,
 						`未知模式 ${arg}（可用: ${roster.map((p) => p.id).join(", ")}）`,
 					);
@@ -1472,7 +1506,7 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				}
 				// Per-conversation preset override — other chats keep theirs.
 				convCfg.set(bridge.conversationKeyFor(msg), {
-					preset: arg,
+					preset: requested,
 					activeSessionId: undefined,
 				});
 				// Agent presets snapshot at agent creation — an existing session's
@@ -1483,10 +1517,10 @@ export function apply(ctx: Context, rawConfig: unknown): void {
 				// store AND the next message would reuse the same sessionId (stale
 				// content / id collision).
 				await conversations?.rotate(bridge.conversationKeyFor(msg));
-				const picked = roster.find((p) => p.id === arg);
-				await durableReply(name, 
+				const picked = roster.find((p) => p.id === requested);
+				await durableReply(name,
 					msg,
-					`模式已切换为 ${picked?.label ?? arg}${
+					`模式已切换为 ${picked?.label ?? requested}${
 						picked?.trust === "user" ? "（自定义）" : ""
 					}（当前会话已重置，下条消息生效；其他会话不受影响）`,
 				);

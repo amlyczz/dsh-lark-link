@@ -23,6 +23,18 @@ import type {
 	AgentHandle,
 	AttachmentInput,
 } from "./dsh-session-backend.ts";
+import { normalizeAgentPreset } from "../common/config.ts";
+
+/** Resolve the DSH agent-preset id for a conversation, normalizing aliases. */
+function resolveAgentPreset(
+	key: string,
+	deps: DshAdapterDeps,
+	presetOverrides: Map<string, string>,
+): string {
+	return normalizeAgentPreset(
+		presetOverrides.get(key) ?? deps.preset?.(key) ?? "ptc",
+	);
+}
 
 export interface DshAdapterDeps {
 	ctx: Context;
@@ -561,26 +573,39 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 					assembled: undefined,
 				});
 			}
-			// Mount the "standard" preset into the agent scope —
-			// exactly what the GUI path does via apiproxy's
-			// composeAgent. Without this the web profile's host-plane
-			// tool rows stay disabled and the bridge agent has NO
-			// bash/fs/goal/subagent tools (session-log evidence:
-			// `Error: unknown tool "bash"` / "write_file" / …).
+			// Mount the agent preset into the agent scope — exactly what the
+			// GUI path does via apiproxy's composeAgent. Without this the web
+			// profile's host-plane tool rows stay disabled and the bridge agent
+			// has NO bash/fs/goal/subagent tools (session-log evidence:
+			// `Error: unknown tool "bash"` / "write_file"` / …).
+			// `resolveAgentPreset` maps historical `code` → DSH `ptc` (GH #11).
 			const presets = (
 				c as unknown as {
 					get?(name: string):
 						| {
 								mount?(agentCtx: Context, presetId: string): Promise<unknown>;
+								list?(): Promise<Array<{ id: string }>>;
 						  }
 						| undefined;
 				}
 			).get?.("agentPresets");
+			const resolvedPreset = resolveAgentPreset(key, deps, presetOverrides);
 			if (presets?.mount) {
-				await presets.mount(
-				agentCtx,
-				presetOverrides.get(key) ?? deps.preset?.(key) ?? "ptc",
-			);
+				if (presets.list) {
+					try {
+						const rows = await presets.list();
+						if (rows.length > 0 && !rows.some((r) => r.id === resolvedPreset)) {
+							deps.logger?.warn(
+								`agent preset "${resolvedPreset}" is not in the DSH roster (available: ${rows
+									.map((r) => r.id)
+									.join(", ")}) — create/mount may fail`,
+							);
+						}
+					} catch {
+						// roster check is best-effort; mount still runs
+					}
+				}
+				await presets.mount(agentCtx, resolvedPreset);
 			}
 			// Shadow ask_user_question: forward DSH intent-confirmation
 			// questions to Feishu cards instead of the GUI-only provider.
@@ -755,7 +780,9 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 						sessionId,
 						meta: {
 							cwd: deps.cwd?.(key) ?? process.cwd(),
-							agentPreset: deps.preset?.(key) ?? "ptc",
+							// Normalize before handing the id to DSH (GH #11):
+							// never emit the historical non-existent `code`.
+							agentPreset: resolveAgentPreset(key, deps, presetOverrides),
 						},
 						...(agentOptions ? { agentOptions } : {}),
 						setup,
@@ -784,7 +811,7 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 									sessionId: freshId,
 									meta: {
 										cwd: deps.cwd?.(key) ?? process.cwd(),
-										agentPreset: deps.preset?.(key) ?? "ptc",
+										agentPreset: resolveAgentPreset(key, deps, presetOverrides),
 									},
 									...(agentOptions ? { agentOptions } : {}),
 									setup,
@@ -1124,7 +1151,9 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 
 			// Detach the current agent on `key`
 			rotateKey(key);
-			if (opts?.preset) presetOverrides.set(key, opts.preset);
+			if (opts?.preset) {
+				presetOverrides.set(key, normalizeAgentPreset(opts.preset));
+			}
 			pendingResume.set(key, { sessionId });
 			try {
 				// Reuse the FULL ensureAgent pipeline (in-flight collapse,

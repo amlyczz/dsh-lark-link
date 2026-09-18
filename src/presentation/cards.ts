@@ -87,7 +87,7 @@ export const AGENT_PRESETS: ReadonlyArray<AgentPresetOption> = [
 		trust: "system",
 	},
 	{
-		id: "code",
+		id: "ptc",
 		label: "PTC 模式",
 		desc: "标准能力 + Code Mode（多步操作一次执行，更快）",
 		trust: "system",

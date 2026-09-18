@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deepMerge, createConfigStore, DEFAULT_CONFIG, HOT_RELOADABLE, buildHotReloadPatch } from "../../../src/common/config.ts";
+import {
+  deepMerge,
+  createConfigStore,
+  DEFAULT_CONFIG,
+  HOT_RELOADABLE,
+  buildHotReloadPatch,
+  normalizeAgentPreset,
+  SHIPPED_AGENT_PRESET_IDS,
+} from "../../../src/common/config.ts";
 
 test("config: defaults deep-merge with partial overrides", () => {
   const merged = deepMerge(DEFAULT_CONFIG, { groupPolicy: "open", streaming: { enabled: false, printFrequencyMs: 120, printStep: 3 } });
@@ -8,6 +16,25 @@ test("config: defaults deep-merge with partial overrides", () => {
   assert.equal(merged.streaming.enabled, false);
   assert.equal(merged.streaming.printFrequencyMs, DEFAULT_CONFIG.streaming.printFrequencyMs);
   assert.equal(merged.denyList.length, 0);
+});
+
+// GH #11: default agentPreset must be a DSH-shipped id — `code` is not one.
+test("config: default agentPreset is a DSH-shipped id (not historical alias `code`)", () => {
+  assert.equal(DEFAULT_CONFIG.agentPreset, "ptc");
+  assert.ok(
+    SHIPPED_AGENT_PRESET_IDS.includes(DEFAULT_CONFIG.agentPreset),
+    `default agentPreset must be in ${SHIPPED_AGENT_PRESET_IDS.join("|")}`,
+  );
+  assert.ok(!SHIPPED_AGENT_PRESET_IDS.includes("code"));
+});
+
+test("config: normalizeAgentPreset maps historical code → ptc and leaves others alone", () => {
+  assert.equal(normalizeAgentPreset("code"), "ptc");
+  assert.equal(normalizeAgentPreset("ptc"), "ptc");
+  assert.equal(normalizeAgentPreset("standard"), "standard");
+  assert.equal(normalizeAgentPreset("minimal"), "minimal");
+  assert.equal(normalizeAgentPreset("cordis"), "cordis");
+  assert.equal(normalizeAgentPreset("my-custom"), "my-custom");
 });
 
 test("config: hot reload only allows whitelisted keys", () => {

@@ -15,6 +15,7 @@ import {
 	modeCard,
 	questionCard,
 	resumeCard,
+	AGENT_PRESETS,
 } from "../../../src/presentation/cards.ts";
 
 type Json = Record<string, unknown>;
@@ -119,6 +120,15 @@ test("button helper: primary/danger 样式", () => {
 	assert.equal(danger.type, "danger");
 	const plain = button("状态", { op: "status" }) as Json;
 	assert.equal(plain.type, undefined);
+});
+
+// GH #11: fallback roster ids must match DSH's shipped agent-presets.
+test("AGENT_PRESETS uses DSH-shipped ids (ptc, not historical code)", () => {
+	const ids = AGENT_PRESETS.map((p) => p.id);
+	assert.deepEqual(ids, ["standard", "ptc", "minimal", "cordis"]);
+	assert.ok(!ids.includes("code"));
+	const ptc = AGENT_PRESETS.find((p) => p.id === "ptc");
+	assert.equal(ptc?.label, "PTC 模式");
 });
 
 test("modeCard 无名单时回退到官方 4 个模式", () => {

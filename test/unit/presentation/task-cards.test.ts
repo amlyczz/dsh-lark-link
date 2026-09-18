@@ -145,7 +145,7 @@ test("task-cards: buildSessionResumedCard renders clean resume card", () => {
 	const card = buildSessionResumedCard({
 		sessionId: "s_123",
 		workspacePath: "/project/app",
-		preset: "code",
+		preset: "ptc",
 	}) as {
 		header: { template: string };
 		body: { elements: Array<{ content?: string; tag?: string }> };

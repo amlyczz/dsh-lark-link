@@ -62,7 +62,7 @@ test("list: service source filters by cwd, excludes subagents, sorts desc", asyn
 					id: "gui-newer",
 					createdAt: 3000,
 					cwd: "/ws/proj",
-					agentPreset: "code",
+					agentPreset: "ptc",
 				},
 				{
 					id: "gui-older",
@@ -91,7 +91,7 @@ test("list: service source filters by cwd, excludes subagents, sorts desc", asyn
 		rows.map((r) => r.id),
 		["gui-newer", "gui-older"],
 	);
-	assert.equal(rows[0]!.preset, "code");
+	assert.equal(rows[0]!.preset, "ptc");
 	assert.equal(rows[0]!.source, "service");
 });
 

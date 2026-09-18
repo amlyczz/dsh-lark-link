@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.4
+
+### Fix: 默认 agentPreset `code` 不是 DSH preset id — 开箱即坏 (GH #11)
+
+DSH 内置 agent-presets roster 是 `standard | ptc | minimal | cordis`，**没有 `code`**。此前默认值、UI roster、文档注释都写了 `code`，且别名映射方向写反（把合法的 `ptc` 改写成非法的 `code`），导致未显式覆盖 `agentPreset` 的会话创建 agent 时直接抛错，飞书侧收不到任何回复。
+
+- **默认值**：`DEFAULT_CONFIG.agentPreset` 从 `"code"` 改为 `"ptc"`（DSH 真实 id）。
+- **别名映射方向修正**：`code → ptc`（此前是 `ptc → code`，恰好把合法值改坏）。旧配置 / 会话 override / 历史 session log 里存的 `code` 在**使用点**统一经 `normalizeAgentPreset()` 归一，创建 agent、preset mount、`/mode`、`/lark-config agentPreset=` 全路径生效。
+- **UI roster**：`AGENT_PRESETS` / 内存后端 `SHIPPED_PRESETS` 的 PTC 行 `id: "code"` → `"ptc"`（label「PTC 模式」不变）。
+- **`/mode` 兼容与诊断**：`/mode code` 按 `ptc` 处理；若 live roster 可用而当前配置 id 不在其中，会提示可用列表（此前用户按报错里的 `available: … ptc …` 填 `ptc` 仍会失败）。
+- **未知 preset 警告**：创建 agent 时若 `agentPresets.list()` 可用且解析后的 id 不在 roster，记 warning，便于 DSH 调整 roster 后尽早发现。
+- **文档与测试**：README 默认值/roster 说明更新；新增 `normalizeAgentPreset` 与 create/resume 归一的回归测试，不再把 `"code"` 固化成 DSH 期望值。
+
+**Full Changelog**: https://github.com/amlyczz/dsh-lark-link/compare/v0.5.3...v0.5.4
+
 ## 0.5.2
 
 ### Fix: agent 完成但飞书无回复 — 事件丢失兜底、补发可救回、失败可见 (GH #9)

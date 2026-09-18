@@ -34,7 +34,7 @@
 | 能力 | 说明 |
 | ---- | ---- |
 | 🎯 **一键认证** | `/lark setup` 扫码创建飞书应用（自动订阅消息事件 + 群聊全量 + 表情权限），**30 秒上线**，无需手搓开放平台；也支持 `DSH_LARK_APP_ID/SECRET` 手动通道 |
-| 🧠 **多模式 Agent** | 标准 / Code / 极简 / Cordis preset + 你在 GUI 自建的 preset，飞书发 `/mode` 出**单选卡片**即切（默认 Code：一次执行多步工具调用，更快更省） |
+| 🧠 **多模式 Agent** | 标准 / PTC / 极简 / Cordis preset + 你在 GUI 自建的 preset，飞书发 `/mode` 出**单选卡片**即切（默认 PTC：一次执行多步工具调用，更快更省） |
 | 🎛 **权限分级** | 只读 / 工作区写 / **Full access** 三种权限，`/permission` 卡片即切；默认 Full access 全放行 |
 | 🎨 **卡片化命令** | `/mode` `/permission` `/model` 全部是**单选按钮卡片**——点一下即切换，不用记命令拼写；模型选择按供应商分组展示 |
 | 💬 **意图确认转发** | 模型提问（`ask_user_question`）→ **飞书意图确认卡片**（选项按钮 + 下拉多选 + 自定义输入），答完模型继续，飞书里完成完整交互闭环 |
@@ -138,7 +138,7 @@ dsh web
 | ------ | ---- | ---- |
 | `groupPolicy` | `open` | 群聊触发策略：`open`（免 @ 全触发）/ `mention` / `keywords` / `reply` |
 | `groupKeywords` | `["lark","bot"]` | `keywords` 模式下的触发词 |
-| `agentPreset` | `code` | Agent preset（shipped：standard/code/minimal/cordis，或 GUI 自建 id） |
+| `agentPreset` | `ptc` | Agent preset（shipped：standard/ptc/minimal/cordis，或 GUI 自建 id；历史别名 `code` 会自动映射为 `ptc`） |
 | `permissionMode` | `danger-full-access` | 权限：read-only / workspace-write / danger-full-access |
 | `streaming.enabled` | `false` | CardKit 流式卡片（开=逐字打印） |
 | `reactions.enabled` | `true` | 表情回执 |
@@ -269,7 +269,7 @@ Suspicious *Already up to date*? Run `dsh plugin --profile web outdated` first �
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `groupPolicy` | `open` | group trigger: open / mention / keywords / reply |
-| `agentPreset` | `code` | agent preset (standard/code/minimal/cordis or custom) |
+| `agentPreset` | `ptc` | agent preset (standard/ptc/minimal/cordis or custom; legacy alias `code` maps to `ptc`) |
 | `permissionMode` | `danger-full-access` | read-only / workspace-write / danger-full-access |
 | `streaming.enabled` | `false` | CardKit streaming cards |
 | `reactions.enabled` | `true` | reaction receipts |

@@ -25,9 +25,9 @@ test("conversation-config: empty by default, set/get per key", () => {
 test("conversation-config: persists across restart and survives reload", () => {
   const f = tmpFile();
   const s1 = createConversationConfigStore(f);
-  s1.set("group:oc_x", { preset: "code", model: "glm-5" });
+  s1.set("group:oc_x", { preset: "ptc", model: "glm-5" });
   const s2 = createConversationConfigStore(f);
-  assert.equal(s2.get("group:oc_x").preset, "code");
+  assert.equal(s2.get("group:oc_x").preset, "ptc");
   assert.equal(s2.get("group:oc_x").model, "glm-5");
   assert.deepEqual(s2.keys(), ["group:oc_x"]);
   rmSync(join(f, ".."), { recursive: true, force: true });
