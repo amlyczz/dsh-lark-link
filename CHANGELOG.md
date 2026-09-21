@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.5
+
+### Feature: setup 持久化 user_info 并申请用户基本信息权限 (GH #12)
+
+`/lark setup` 注册时 `registerApp` 已请求并返回扫码者的 `user_info`（`open_id` + `tenant_brand`），此前只用来判断 feishu/lark 域，其余字段被丢弃；且应用缺少通讯录字段权限，配套插件无法把 `open_id` 解析成姓名/头像。
+
+- **持久化 `userInfo`**：setup 成功后写入凭据 blob（`{appId, appSecret, domain, userInfo}`）；无 `user_info` 或全空载荷**不写该键**，手动 `DSH_LARK_APP_ID/SECRET` 通道与历史 blob 形状不变。
+- **`parseCredentials` 透传 `userInfo`**：该函数逐字段重建对象，不显式拷贝会在每次读取时静默丢失。
+- **`SETUP_SCOPES` 增加 `contact:user.base:readonly`**：否则 `contact/v3/users/:open_id` 虽 HTTP 200 `code=0`，`name`/`en_name` 会被字段级权限滤成 `undefined`。
+- **类型补全**：`RegisterAppFn.user_info` 从仅 `tenant_brand` 放宽为 `LarkUserInfo`（`open_id` + `tenant_brand`），与 SDK 声明一致。
+- **消费路径**：`resolveCredentials(store, ref)` → `userInfo.open_id` → `contact/v3/users/:open_id?user_id_type=open_id` 取姓名/头像，无需用户先发消息。
+
+Closes #12
+
+**Full Changelog**: https://github.com/amlyczz/dsh-lark-link/compare/v0.5.4...v0.5.5
+
 ## 0.5.4
 
 ### Fix: 默认 agentPreset `code` 不是 DSH preset id — 开箱即坏 (GH #11)
