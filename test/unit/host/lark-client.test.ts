@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import {
 	isValidRef,
+	normalizeUserInfo,
 	parseCredentials,
 	resolveCredentials,
 	persistCredentials,
@@ -132,6 +133,68 @@ test("lark-client: parseCredentials reads JSON blob", () => {
 	);
 });
 
+// ---- GH #12: user_info survives the credential blob ----
+test("lark-client: normalizeUserInfo keeps real fields, drops empty payloads", () => {
+	assert.equal(normalizeUserInfo(undefined), undefined);
+	assert.equal(normalizeUserInfo({}), undefined, "empty payload → undefined");
+	assert.equal(
+		normalizeUserInfo({ open_id: "" }),
+		undefined,
+		"empty string is not an id",
+	);
+	assert.equal(
+		normalizeUserInfo({ tenant_brand: "bogus" }),
+		undefined,
+		"unknown brand dropped",
+	);
+	assert.deepEqual(normalizeUserInfo({ open_id: "ou_1" }), { open_id: "ou_1" });
+	assert.deepEqual(
+		normalizeUserInfo({ open_id: "ou_1", tenant_brand: "lark" }),
+		{ open_id: "ou_1", tenant_brand: "lark" },
+	);
+});
+
+test("lark-client: parseCredentials carries user_info through (GH #12)", () => {
+	// parseCredentials rebuilds the object field by field — anything it does
+	// not copy is silently lost on every read, so assert the round-trip.
+	const blob = JSON.stringify({
+		appId: "cli_a",
+		appSecret: "sec",
+		domain: "feishu",
+		userInfo: { open_id: "ou_scan", tenant_brand: "feishu" },
+	});
+	assert.deepEqual(parseCredentials(blob), {
+		appId: "cli_a",
+		appSecret: "sec",
+		domain: "feishu",
+		userInfo: { open_id: "ou_scan", tenant_brand: "feishu" },
+	});
+});
+
+test("lark-client: pre-GH#12 blob still parses without a userInfo key", () => {
+	const parsed = parseCredentials(
+		JSON.stringify({ appId: "a", appSecret: "s", domain: "lark" }),
+	);
+	assert.deepEqual(parsed, { appId: "a", appSecret: "s", domain: "lark" });
+	assert.equal(
+		Object.hasOwn(parsed as object, "userInfo"),
+		false,
+		"no phantom key — the stored shape is unchanged for old blobs",
+	);
+	// A blob whose userInfo is junk must not poison the credentials.
+	assert.deepEqual(
+		parseCredentials(
+			JSON.stringify({
+				appId: "a",
+				appSecret: "s",
+				domain: "lark",
+				userInfo: {},
+			}),
+		),
+		{ appId: "a", appSecret: "s", domain: "lark" },
+	);
+});
+
 // ---- resolve / persist / clear ----
 test("lark-client: resolve → persist → clear round-trip", async () => {
 	const store = memStore();
@@ -140,6 +203,7 @@ test("lark-client: resolve → persist → clear round-trip", async () => {
 		appId: "cli_x",
 		appSecret: "shh",
 		domain: "feishu",
+		userInfo: { open_id: "ou_round", tenant_brand: "feishu" },
 	};
 	await persistCredentials(store, "LARK_LINK_APP", creds);
 	assert.deepEqual(await resolveCredentials(store, "LARK_LINK_APP"), creds);

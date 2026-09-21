@@ -9,7 +9,8 @@
 //                 onStatusChange?(info), appId? }) → { client_id, client_secret, user_info? }
 
 import type { Logger } from "../common/logger.ts";
-import type { LarkDomain, LarkCredentials } from "./lark-client.ts";
+import type { LarkDomain, LarkCredentials, LarkUserInfo } from "./lark-client.ts";
+import { normalizeUserInfo } from "./lark-client.ts";
 import { gzipSync } from "node:zlib";
 
 /** registerApp addons payload (the launcher applies these when creating the app). */
@@ -30,6 +31,10 @@ export const SETUP_SCOPES: readonly string[] = [
 	"im:resource",
 	"im:message.group_msg", // all group messages (no @ required when policy=open)
 	"im:message.reactions:write_only", // DONE / receipt reactions
+	// GH #12: without a field-level contact scope, contact/v3/users/:open_id
+	// returns HTTP 200 code=0 with name/en_name filtered to undefined — the
+	// open_id is then an unresolvable identifier.
+	"contact:user.base:readonly", // resolve the setup user's name/avatar
 ] as const;
 
 /** Pure function — unit-testable addon builder. */
@@ -60,7 +65,7 @@ export type RegisterAppFn = (options: {
 }) => Promise<{
 	client_id?: string;
 	client_secret?: string;
-	user_info?: { tenant_brand?: string };
+	user_info?: LarkUserInfo;
 }>;
 
 export interface AuthSetupDeps {
@@ -102,12 +107,20 @@ export function createAuthSetup(deps: AuthSetupDeps): AuthSetup {
 				throw new Error("registerApp 未返回 client_id/client_secret");
 			}
 			const domain = detectDomain(created.user_info);
+			// GH #12: the registration poll is the ONLY moment this payload
+			// exists — persist it now or it is gone for good. The key is
+			// omitted when absent so the stored blob keeps its historical
+			// shape (and manual appId/appSecret setups stay unchanged).
+			const userInfo = normalizeUserInfo(created.user_info);
 			// registerApp applies the addons (event subscription + scopes) at app
 			// creation time; the transport later verifies im.message.receive_v1.
 			opts.onStatusChange?.("校验事件订阅…");
-			await deps.persist({ appId, appSecret, domain });
+			const result: SetupResult = userInfo
+				? { appId, appSecret, domain, userInfo }
+				: { appId, appSecret, domain };
+			await deps.persist(result);
 			opts.onStatusChange?.("完成 ✅");
-			return { appId, appSecret, domain };
+			return result;
 		},
 	};
 }
@@ -250,9 +263,7 @@ export function registerAppWithFetch(): RegisterAppFn {
 				{ action: "poll", device_code: deviceCode },
 				signal,
 			);
-			const userInfo = pollRes.user_info as
-				| { tenant_brand?: string }
-				| undefined;
+			const userInfo = pollRes.user_info as LarkUserInfo | undefined;
 			// Lark (international) domain switch — once only, like the SDK.
 			if (userInfo?.tenant_brand === "lark" && !domainSwitched) {
 				currentBase = larkBaseUrl;

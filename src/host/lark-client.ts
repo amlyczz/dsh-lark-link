@@ -16,10 +16,47 @@ import type { Logger } from "../common/logger.ts";
 
 export type LarkDomain = "feishu" | "lark";
 
+/**
+ * The scanning user's identity, as returned by the registration service's
+ * `user_info` payload (GH #12). Mirrors @larksuiteoapi/node-sdk's `UserInfo`.
+ */
+export interface LarkUserInfo {
+	/** The scanning user's open_id — this app's own view of that user. */
+	open_id?: string;
+	/** Tenant brand reported by the registration service. */
+	tenant_brand?: "feishu" | "lark";
+}
+
+/**
+ * Keep only the fields worth persisting. The registration service omits
+ * fields it has no value for, and `user_info` itself is optional, so an
+ * all-empty payload normalizes to undefined instead of an empty object.
+ */
+export function normalizeUserInfo(
+	raw: { open_id?: unknown; tenant_brand?: unknown } | undefined,
+): LarkUserInfo | undefined {
+	if (!raw) return undefined;
+	const out: LarkUserInfo = {};
+	if (typeof raw.open_id === "string" && raw.open_id !== "") {
+		out.open_id = raw.open_id;
+	}
+	if (raw.tenant_brand === "feishu" || raw.tenant_brand === "lark") {
+		out.tenant_brand = raw.tenant_brand;
+	}
+	return out.open_id !== undefined || out.tenant_brand !== undefined
+		? out
+		: undefined;
+}
+
 export interface LarkCredentials {
 	appId: string;
 	appSecret: string;
 	domain: LarkDomain;
+	/**
+	 * Setup-time user identity (GH #12). Optional: blobs written before this
+	 * existed, and the manual appId/appSecret channel, carry no user_info.
+	 */
+	userInfo?: LarkUserInfo;
 }
 
 /** Minimal credential-store seam — ctx.credentials satisfies this. */
@@ -43,11 +80,17 @@ export function parseCredentials(
 	try {
 		const parsed = JSON.parse(raw) as Partial<LarkCredentials>;
 		if (parsed.appId && parsed.appSecret) {
-			return {
+			const out: LarkCredentials = {
 				appId: parsed.appId,
 				appSecret: parsed.appSecret,
 				domain: parsed.domain === "lark" ? "lark" : "feishu",
 			};
+			// GH #12: carry the setup-time user_info through. This function
+			// rebuilds the object field by field, so anything not copied here
+			// is silently dropped on every read.
+			const userInfo = normalizeUserInfo(parsed.userInfo);
+			if (userInfo) out.userInfo = userInfo;
+			return out;
 		}
 	} catch {
 		// malformed blob → treat as unconfigured
