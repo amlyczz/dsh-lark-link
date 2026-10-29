@@ -121,6 +121,8 @@ interface AgentRegistrySurface {
 		setup?: (agentCtx: Context) => unknown;
 	}): Promise<AgentHandleSurface>;
 	get(id: string): Agent | undefined;
+	/** All live agents in the process-wide registry (GH #16 adoption path). */
+	list?(): Agent[];
 }
 
 /** The owned handle returned by agents.create — carries the disposer. */
@@ -484,6 +486,47 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	};
 
+	/**
+	 * Adopt a live agent that ANOTHER component owns (the desktop GUI, another
+	 * plugin). DSH persists sessions with a single writer: when the GUI opens a
+	 * bridge session it holds the write handle, so resume() rejects with
+	 * SessionAlreadyOwnedError / "already owned by an active write handle".
+	 * Evicting it is neither possible (AgentRegistry.get returns a bare Agent
+	 * with no disposer) nor desirable (it would tear down the user's open tab).
+	 * Instead share the exact live agent so the conversation continues in the
+	 * SAME session instead of silently minting a fresh one (GH #16).
+	 *
+	 * The returned handle's dispose() is a deliberate no-op: the agent is not
+	 * bridge-owned, so bridge teardown / rotation / idle eviction must never
+	 * dispose it.
+	 */
+	const adoptLive = (targetSessionId: string): AgentHandleSurface | undefined => {
+		try {
+			const reg = c.agents as AgentRegistrySurface;
+			let live: Agent | undefined;
+			if (typeof reg.get === "function") live = reg.get(targetSessionId);
+			if (!live && typeof reg.list === "function") {
+				live = reg.list().find((a) => {
+					const sid = (a as { session?: { id?: string } }).session?.id;
+					return (
+						sid === targetSessionId ||
+						(a as { id?: string }).id === targetSessionId
+					);
+				});
+			}
+			if (!live) return undefined;
+			deps.logger?.info(
+				`ADOPTED live agent ${live.id} for ${targetSessionId} (owned elsewhere; bridge will not dispose it)`,
+			);
+			return { agent: live, dispose: async () => {} };
+		} catch (err) {
+			deps.logger?.warn(
+				`adoptLive failed for ${targetSessionId}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			return undefined;
+		}
+	};
+
 	// Detach a key's live agent and clean it up (rotate / resume): drop
 	// listeners + tracking and dispose the agent so it is retired from memory;
 	// its persisted log on disk survives intact; mint a fresh runNonce so any later create
@@ -753,9 +796,18 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 				sessionId = pending.sessionId;
 				deps.setActiveSessionId?.(key, sessionId);
 			} catch (err) {
-				throw new Error(
-					`failed to resume session "${pending.sessionId}" for ${key}: ${err instanceof Error ? err.message : String(err)}`,
-				);
+				// GH #16: the session may be live because another component (the
+				// desktop GUI) owns the write handle. Adopt it rather than failing.
+				const adopted = adoptLive(pending.sessionId);
+				if (adopted) {
+					owned = adopted;
+					sessionId = pending.sessionId;
+					deps.setActiveSessionId?.(key, sessionId);
+				} else {
+					throw new Error(
+						`failed to resume session "${pending.sessionId}" for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
 			}
 		} else {
 			// If there is an active session recorded for this conversation (e.g. before dsh restart),
@@ -772,9 +824,20 @@ export function createDshAdapter(deps: DshAdapterDeps): DshSessionBackend {
 					});
 					sessionId = activeId;
 				} catch (err) {
-					deps.logger?.warn(
-						`failed to resume active session "${activeId}" for ${key}: ${err instanceof Error ? err.message : String(err)} — falling back to create fresh session`,
-					);
+					// GH #16: a live in-process agent with this id means another
+					// component (the desktop GUI) owns the write handle. Adopt it so
+					// the Feishu side keeps the SAME session and conversation context
+					// instead of silently minting a fresh one. Only when no live agent
+					// exists do we fall back to a fresh session.
+					const adopted = adoptLive(activeId);
+					if (adopted) {
+						resumedOwned = adopted;
+						sessionId = activeId;
+					} else {
+						deps.logger?.warn(
+							`failed to resume active session "${activeId}" for ${key}: ${err instanceof Error ? err.message : String(err)} — falling back to create fresh session`,
+						);
+					}
 				}
 			}
 
