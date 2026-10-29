@@ -127,12 +127,22 @@ const silentLogger = { info() {}, warn() {} };
 
 /** Minimal AgentRegistry fake — records create opts, returns fake agents. */
 function fakeRegistry(
-	opts: { onEvent?: (agent: unknown, ev: unknown) => void } = {},
+	opts: {
+		onEvent?: (agent: unknown, ev: unknown) => void;
+		/** Live agents owned by ANOTHER component (e.g. the desktop GUI). The real
+		 * DSH AgentRegistry exposes only a bare Agent via get(), with no public
+		 * handle/disposer, so a plugin cannot evict them — resume() fails with
+		 * "already owned". This models exactly that: foreign agents are visible
+		 * to get()/list() but are NOT in the local .agents map, so the legacy
+		 * force-evict path cannot remove them. */
+		foreignLive?: Map<string, unknown>;
+	} = {},
 ) {
 	const created: Array<Record<string, unknown>> = [];
 	const resumed: Array<Record<string, unknown>> = [];
 	const agentNo = { n: 0 };
 	const agents = new Map<string, unknown>();
+	const foreign = opts.foreignLive;
 	const makeAgent = (sessionId: string) => {
 		const id = sessionId;
 		const listeners = new Set<(ev: unknown) => void>();
@@ -190,7 +200,7 @@ function fakeRegistry(
 		agents,
 		agentCtxHolder,
 		async create(createOpts: { sessionId: string; setup?: unknown }) {
-			if (agents.has(createOpts.sessionId)) {
+			if (agents.has(createOpts.sessionId) || foreign?.has(createOpts.sessionId)) {
 				throw new Error(`session "${createOpts.sessionId}" already exists`);
 			}
 			await runSetup(createOpts.setup);
@@ -204,6 +214,9 @@ function fakeRegistry(
 			};
 		},
 		async resume(resumeOpts: { resumeSessionId: string; setup?: unknown }) {
+			if (foreign?.has(resumeOpts.resumeSessionId)) {
+				throw new Error(`session "${resumeOpts.resumeSessionId}" is already owned by an active write handle`);
+			}
 			if (agents.has(resumeOpts.resumeSessionId)) {
 				throw new Error(`cannot prepare session "${resumeOpts.resumeSessionId}" while it is live`);
 			}
@@ -220,7 +233,10 @@ function fakeRegistry(
 			};
 		},
 		get(id: string) {
-			return agents.get(id);
+			return agents.get(id) ?? foreign?.get(id);
+		},
+		list() {
+			return [...agents.values(), ...(foreign?.values() ?? [])];
 		},
 	};
 	return { ...registry, created, resumed, agentCtxHolder };
@@ -538,6 +554,49 @@ test("adapter: create collision falls back to resume existing session", async ()
 	// Collision during create automatically fell back to resume the existing session
 	assert.equal(registry.resumed.length, 1, "resume was used on collision");
 	assert.equal(handle.sessionId, collidedId, "reused existing session id");
+});
+
+test("adapter: adopts a live session owned elsewhere instead of minting fresh (GH #16)", async () => {
+	// Regression: the DSH desktop GUI opens the same bridge session and holds the
+	// single-writer handle. When Feishu then sends a message, ensureAgent() resumes
+	// the active id, hits "already owned", and (before this fix) silently mints a
+	// brand-new session — losing the conversation. It must instead adopt the live
+	// in-process agent and keep the SAME session id.
+	const NONCE = "r4adopt";
+	const liveId = `lark-link:dm:ou_user_1:${NONCE}:0`;
+	const liveAgent = {
+		id: liveId,
+		status: "idle" as string,
+		session: { id: liveId },
+		followups: [] as Array<{ content: Array<Record<string, unknown>> }>,
+		followup(message: { content: Array<Record<string, unknown>> }) {
+			this.followups.push(message);
+		},
+		cancel() {},
+		ctx: { on: () => () => {}, emit: () => {} },
+	};
+	// Simulate the GUI owning the live session: it is live in the process-wide
+	// registry but NOT evictable by this plugin, so resume() rejects exactly like
+	// SessionAlreadyOwnedError on a real host.
+	const foreignLive = new Map<string, unknown>([[liveId, liveAgent]]);
+	const registry = fakeRegistry({ foreignLive });
+	const ctx = ctxOf(registry, undefined);
+	const activeSessions = new Map<string, string | undefined>([
+		["dm:ou_user_1", liveId],
+	]);
+	const backend = mkBackend(ctx, undefined, NONCE, activeSessions);
+
+	const handle = await backend.ensureAgent("dm:ou_user_1");
+
+	assert.equal(handle.sessionId, liveId, "adopted the live session id, not a fresh one");
+	assert.equal(handle.agentId, liveId, "adopted the live agent");
+	assert.equal(registry.created.length, 0, "no fresh session was minted");
+	assert.equal(activeSessions.get("dm:ou_user_1"), liveId, "activeSessionId is unchanged");
+
+	// The adopted agent belongs to the GUI, not the bridge: tearing the bridge
+	// handle down must NOT dispose the shared agent/session.
+	await handle.dispose();
+	assert.ok(foreignLive.has(liveId), "bridge must not dispose a session it adopted");
 });
 
 test("adapter: /new (rotate) mints a wholly fresh session id (new nonce)", async () => {

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.1
+
+### Fix: 桌面端打开同一会话后飞书侧 resume 撞写句柄 → 静默新建会话、上下文丢失 (GH #16)
+
+DSH 会话持久化是单写者模型：桌面端 GUI 打开飞书桥接的那个会话后持有了该 sessionId 的写句柄；飞书再收到消息时，`ensureAgent()` 先 `releaseLiveSession()` 再 `agents.resume()` 必然撞上 `SessionAlreadyOwnedError`（"already owned by an active write handle"），遂静默退回 `create` 铸出一个全新 nonce 会话，`activeSessionId` 被替换，用户侧上下文断裂。
+
+- **新增 `adoptLive()` 接管路径**：resume 失败时，先在**进程级** `ctx.agents.get(id) / list()` 中查找同 sessionId 的 live agent。找到即以「共享句柄」的方式接管（同一会话、同一 agent），不再新建会话，`activeSessionId` 保持不变。
+- **接管句柄不归桥接销毁**：接管得到的 handle 其 `dispose()` 为 no-op —— 桥接销毁 / `/new` 轮换 / 空闲回收都**不会**连带拆掉桌面端打开的会话；只有桥接自己创建的 agent 才会被销毁。
+- 覆盖 `activeSessionId` 恢复路径与显式 `/resume` 路径；只有确实找不到 live agent 时才回退到新建会话（并保留 warn 日志）。
+- 回归测试：新增 `adapter: adopts a live session owned elsewhere instead of minting fresh (GH #16)`，用「不可被强制驱逐的 foreign live agent」精确建模 GUI 独占写句柄的场景。
+
 ## 0.6.0
 
 ### Feature: 设置页与插件详情页复用统一控制台 & 移除侧边栏图标
