@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createMemoryDshBackend } from "../../../src/sessions/dsh-session-backend.ts";
-import type { SessionEventOut } from "../../../src/sessions/dsh-session-backend.ts";
+import type { AgentHandle, SessionEventOut } from "../../../src/sessions/dsh-session-backend.ts";
 import { createConversationManager } from "../../../src/sessions/conversation-manager.ts";
 import type { FeishuInboundMessage } from "../../../src/common/types.ts";
 
@@ -262,6 +262,73 @@ test("manager: message after stop continues in the same session", async () => {
 	assert.ok(agentAfter);
 	assert.equal(agentAfter.sessionId, sessionIdBefore, "same session ID after stop");
 	assert.equal(agentAfter.agentId, agentBefore.agentId, "same agent after stop");
+	await cm.disposeAll();
+});
+
+test("manager GH #18: idle recycle keeps agentId (real DSH) but must still re-attach the event subscription", async () => {
+	// Real DSH: Agent.id === sessionId and resume() reuses that id, so a
+	// disposed-then-resumed agent has an UNCHANGED agentId; only the handle
+	// instance is fresh. Attachment must key on handle identity, not agentId.
+	const mkStableBackend = () => {
+		const agents = new Map<string, AgentHandle>();
+		const makeHandle = (key: string): AgentHandle => {
+			const sid = `session-${key}`; // stable across dispose/recreate
+			const listeners = new Set<(e: SessionEventOut) => void>();
+			let busy = false;
+			const emit = (e: SessionEventOut) => { for (const fn of [...listeners]) fn(e); };
+			return {
+				agentId: sid,
+				sessionId: sid,
+				async followup() {
+					busy = true;
+					emit({ type: "turn/start" });
+					emit({ type: "assistant/message", text: "reply" });
+					emit({ type: "turn/end", reason: "complete" });
+					busy = false;
+				},
+				async cancel() { busy = false; },
+				onEvent(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+				isIdle: () => !busy,
+				async dispose() { listeners.clear(); },
+			};
+		};
+		return {
+			async ensureAgent(key: string) { const h = makeHandle(key); agents.set(key, h); return h; },
+			get: (key: string) => agents.get(key),
+			disposeIdle() { let n = 0; for (const [k, a] of agents) { if (a.isIdle()) { void a.dispose(); agents.delete(k); n++; } } return n; },
+			size: () => agents.size,
+			rotate() {},
+			clearImageUnsupported() {},
+			async dispose(key: string) { await agents.get(key)?.dispose(); agents.delete(key); },
+			async disposeAll() { for (const a of agents.values()) await a.dispose(); agents.clear(); },
+			keyForSessionId: () => undefined,
+			listPresets: async () => [],
+		};
+	};
+
+	const backend = mkStableBackend();
+	const events: string[] = [];
+	const cm = createConversationManager({
+		backend: backend as never,
+		maxSessions: 8,
+		idleTtlMs: 0,
+		onEvent: (key, e) => events.push(`${key}:${e.type}`),
+	});
+
+	await cm.handleMessage(mkMsg("ou_stable", "p2p", "before"));
+	await new Promise((res) => setTimeout(res, 50));
+	assert.ok(events.some((e) => e.endsWith("assistant/message")), "first reply fans out");
+
+	// Recycle the idle agent (same as the 60s TTL sweep).
+	assert.ok(cm.sweep() >= 1, "swept idle agent");
+
+	events.length = 0;
+	await cm.handleMessage(mkMsg("ou_stable", "p2p", "after"));
+	await new Promise((res) => setTimeout(res, 100));
+	assert.ok(
+		events.some((e) => e === "dm:ou_stable:assistant/message"),
+		"reply after idle recycle must fan out even though agentId is unchanged",
+	);
 	await cm.disposeAll();
 });
 

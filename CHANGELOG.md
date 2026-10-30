@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.2
+
+### Fix: 空闲回收后 resume 的 agent id 不变 → 未重挂 session/event 订阅 → 飞书侧静默无回复 (GH #18)
+
+DSH 的 `Agent.id` 恒等于 `sessionId`，空闲回收后 `resume()` 复用同一 id。原 `conversation-manager` 用 `agentId` 判断是否需要重挂订阅，`prevAgentId === agent.agentId` 恒成立，导致回收后不再 `onEvent`，之后所有 `assistant/message`/`turn/end` 全部丢失：Agent 正常回答、outbox 无信封、飞书静默。
+
+- **改用 AgentHandle 实例身份判断**：`hooksHandle` 现保存 handle 实例而非 agentId，用 `prevAgent !== agent` 判断重挂，覆盖 idle sweep 与 cap 驱逐两条路径。
+- 回归测试：新增 `manager GH #18: idle recycle keeps agentId (real DSH) but must still re-attach the event subscription`，用「agentId 稳定、handle 每次新建」的假后端精确复现真实 DSH 语义。
+
 ## 0.6.1
 
 ### Fix: 桌面端打开同一会话后飞书侧 resume 撞写句柄 → 静默新建会话、上下文丢失 (GH #16)
